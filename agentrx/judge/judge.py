@@ -386,16 +386,28 @@ class Report:
 # --- Few-Shot Examples (from Refactored) ---
 
 def load_few_shot_examples():
-    """Load few-shot examples from the few_shot_examples directory."""
+    """Load the per-category few-shot examples shipped with the judge.
+
+    Raises FileNotFoundError listing every missing / malformed file. The
+    loader is reachable only from ``ensure_few_shot_examples_loaded`` which
+    is in turn called only when ``PROMPT_MODE`` actually requires examples
+    (``examples`` or ``combined``), so reaching this point with a missing
+    file is a configuration error, not a degraded mode — silently substituting
+    "No example available." would change what the judge sees on a per-run
+    basis and make Tab-1/Tab-2 numbers irreproducible.
+
+    Category 10 (INCONCLUSIVE) intentionally has no example file and is
+    omitted from the returned dict; callers must handle its absence.
+    """
     global EXAMPLES_DIR
-    
-    # Use global EXAMPLES_DIR if set, otherwise use default
-    if EXAMPLES_DIR is None:
-        examples_dir = os.path.join(os.path.dirname(__file__), "few_shot_examples")
-    else:
-        examples_dir = EXAMPLES_DIR
-    
-    # Mapping of category numbers to their example file names
+
+    examples_dir = (
+        EXAMPLES_DIR
+        if EXAMPLES_DIR is not None
+        else os.path.join(os.path.dirname(__file__), "few_shot_examples")
+    )
+
+    # Category number → filename. None means "no example for this category".
     example_files = {
         1: "instruction_adherence_failure.json",
         2: "invention_of_new_information.json",
@@ -406,40 +418,39 @@ def load_few_shot_examples():
         7: "intent_not_supported.json",
         8: "guardrails_triggered.json",
         9: "system_failure.json",
-        10: None 
+        10: None,
     }
-    
+
+    if not os.path.isdir(examples_dir):
+        raise FileNotFoundError(
+            f"Few-shot examples directory does not exist: {examples_dir}. "
+            f"PROMPT_MODE requires examples; either point --examples_dir at "
+            f"a populated directory or switch PROMPT_MODE."
+        )
+
     examples = {}
-    loaded_count = 0
-    missing_count = 0
-    skipped_count = 0
-    
-    print(f"[FEW-SHOT] Looking for examples in: {examples_dir}")
-    if not os.path.exists(examples_dir):
-        print(f"[FEW-SHOT] WARNING: Examples directory does not exist: {examples_dir}")
-    
+    errors = []
     for category_num, filename in example_files.items():
-        if filename:
-            path = os.path.join(examples_dir, filename)
-            try:
-                with open(path, 'r') as f:
-                    examples[category_num] = json.load(f)
-                    loaded_count += 1
-                    print(f"[FEW-SHOT] [OK] Loaded example for category {category_num}: {filename}")
-            except FileNotFoundError:
-                examples[category_num] = None
-                missing_count += 1
-                print(f"[FEW-SHOT] [MISS] Missing example for category {category_num}: {filename}")
-            except json.JSONDecodeError as e:
-                examples[category_num] = None
-                missing_count += 1
-                print(f"[FEW-SHOT] [ERR] Invalid JSON in example for category {category_num}: {filename} - {e}")
-        else:
-            examples[category_num] = None
-            skipped_count += 1
-    
-    print(f"[FEW-SHOT] Summary: {loaded_count} loaded, {missing_count} missing, {skipped_count} skipped (no file defined)")
-    
+        if filename is None:
+            continue
+        path = os.path.join(examples_dir, filename)
+        try:
+            with open(path, "r") as f:
+                examples[category_num] = json.load(f)
+        except FileNotFoundError:
+            errors.append(f"  category {category_num}: missing {path}")
+        except json.JSONDecodeError as e:
+            errors.append(f"  category {category_num}: invalid JSON in {path} — {e}")
+
+    if errors:
+        raise FileNotFoundError(
+            "Few-shot examples required by PROMPT_MODE but unavailable:\n"
+            + "\n".join(errors)
+        )
+
+    print(
+        f"[FEW-SHOT] Loaded {len(examples)} per-category examples from {examples_dir}"
+    )
     return examples
 
 # Initialize as None - will be loaded in main() after parsing args
@@ -453,8 +464,6 @@ def ensure_few_shot_examples_loaded():
     return FEW_SHOT_EXAMPLES
 
 def format_example_for_prompt(example_data):
-    if example_data is None or (isinstance(example_data, str) and not example_data.strip()):
-        return "No example available."
     example_json = json.dumps(example_data, separators=(',', ': '))
     return f"```json\n{example_json}\n```"
 
@@ -1763,7 +1772,7 @@ def create_aggregate_summary(base_output_dir, num_iterations):
 
 def main():
     global RUN_WITH_CONTEXT, ENDPOINT_USED, PROMPT_MODE, EXECUTION_MODE, DOMAIN, USE_GROUND_TRUTH
-    global EXAMPLES_DIR, VIOLATION_CONTEXT_DIR, FEW_SHOT_EXAMPLES
+    global EXAMPLES_DIR, VIOLATION_CONTEXT_DIR
     
     parser = argparse.ArgumentParser(
         description='LLM Judge Merged - Evaluation System for AI Agent Failures',
@@ -1806,8 +1815,9 @@ def main():
     if args.violation_context_dir:
         VIOLATION_CONTEXT_DIR = args.violation_context_dir
     
-    # Load few-shot examples now that EXAMPLES_DIR is set
-    FEW_SHOT_EXAMPLES = load_few_shot_examples()
+    # Few-shot examples are loaded lazily by build_taxonomy_text() when
+    # PROMPT_MODE actually needs them; loading eagerly here would force every
+    # run (including baseline/checklist modes) to require example assets.
     
     PROMPT_MODE = args.prompt_mode
     EXECUTION_MODE = args.exec_mode
