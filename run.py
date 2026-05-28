@@ -417,6 +417,7 @@ def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
     print(f"  [DEBUG][run_judge] EXECUTION_MODE:        {judge_module.EXECUTION_MODE}")
     print(f"  [DEBUG][run_judge] RUN_WITH_CONTEXT:      {judge_module.RUN_WITH_CONTEXT}")
     print(f"  [DEBUG][run_judge] USE_GROUND_TRUTH:      {judge_module.USE_GROUND_TRUTH}")
+    print(f"  [DEBUG][run_judge] NUM_RUNS:              {config.num_runs}")
 
     # Load ground truth if provided
     gt_failures = None
@@ -430,18 +431,28 @@ def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
     print(f"  [DEBUG][run_judge] api_version:           {api_version}")
     print(f"  [DEBUG][run_judge] model_name:            {model_name}")
 
-    # Run a single iteration.
     # Use the IR file (already normalized) so the judge doesn't re-normalize
     # and lose trajectories.
     ir_file = os.path.join(run_dir, "trajectory_ir.json")
-    judge_module.run_single_iteration(
-        run_number=1,
-        base_output_dir=judge_out_dir,
-        ground_truth_failures=gt_failures,
-        api_version=api_version,
-        model_name=model_name,
-        log_file=ir_file if os.path.exists(ir_file) else input_path,
-    )
+    log_file = ir_file if os.path.exists(ir_file) else input_path
+
+    # Perform `config.num_runs` independent judge iterations. The judge writes
+    # each iteration's per-task results to runs/run{N}.json under judge_out_dir.
+    for run_number in range(1, config.num_runs + 1):
+        if config.num_runs > 1:
+            print(f"\n  [run_judge] === Iteration {run_number}/{config.num_runs} ===")
+        judge_module.run_single_iteration(
+            run_number=run_number,
+            base_output_dir=judge_out_dir,
+            ground_truth_failures=gt_failures,
+            api_version=api_version,
+            model_name=model_name,
+            log_file=log_file,
+        )
+
+    # When > 1 iteration was run, emit the mean/std aggregate the paper reports.
+    if config.num_runs > 1:
+        judge_module.create_aggregate_summary(judge_out_dir, config.num_runs)
 
     print(f"  Output: {judge_out_dir}")
     return judge_out_dir
@@ -556,7 +567,33 @@ Examples:
                         help="Custom name for this run (default: auto-generated)")
     parser.add_argument("--run-dir", default=None,
                         help="Resume into an existing run directory")
+
+    # --- Judge-stage knobs (override individual axes of agentrx.pipeline.profiles.PAPER_DEFAULT) ---
+    parser.add_argument("--prompt-mode", default=PAPER_DEFAULT.prompt_mode,
+                        choices=["baseline", "checklist", "examples", "combined"],
+                        help=f"Judge prompt taxonomy mode (default: {PAPER_DEFAULT.prompt_mode}, paper-faithful)")
+    parser.add_argument("--exec-mode", default=PAPER_DEFAULT.exec_mode,
+                        choices=["violations-after", "stepbystep", "violations-before"],
+                        help=f"Judge execution mode (default: {PAPER_DEFAULT.exec_mode}, paper-faithful)")
+    parser.add_argument("--no-context", action="store_true",
+                        help="Do not inject deduplicated violation context into the judge prompt "
+                             "(paper-faithful default injects context when the check stage produced it)")
+    parser.add_argument("--num-runs", type=int, default=PAPER_DEFAULT.num_runs,
+                        help=f"Number of independent judge iterations (default: {PAPER_DEFAULT.num_runs}, "
+                             "paper-faithful). When >1, writes runs/run{N}.json per iteration and "
+                             "emits a mean/std aggregate summary.")
+
     args = parser.parse_args()
+
+    # Resolve judge-stage axes into a single immutable RunConfig that flows
+    # through run_pipeline -> run_judge. Anything not overridden inherits from
+    # PAPER_DEFAULT, so an unflagged invocation produces the paper recipe.
+    args.judge_config = RunConfig(
+        prompt_mode=args.prompt_mode,
+        exec_mode=args.exec_mode,
+        with_context=PAPER_DEFAULT.with_context and not args.no_context,
+        num_runs=args.num_runs,
+    )
 
     input_path = os.path.abspath(args.input)
     if not os.path.exists(input_path):
@@ -718,6 +755,7 @@ def run_pipeline(input_path: str, args):
                 ir_path, run_dir, domain, args.endpoint,
                 violation_context_dir=violation_ctx,
                 ground_truth_file=args.ground_truth,
+                config=args.judge_config,
             )
             state["completed_stages"] = list(set(state.get("completed_stages", [])) | {"judge"})
             save_state(run_dir, state)

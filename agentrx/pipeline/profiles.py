@@ -27,14 +27,23 @@ class RunConfig:
     with_context  inject deduplicated violation context into the judge prompt
                   (runtime value also requires the upstream check stage to have
                   produced a context directory; see run.py::run_judge)
+    num_runs      number of independent judge iterations to perform; when > 1,
+                  the pipeline writes per-run outputs under `runs/run{N}.json`
+                  and emits a mean/std aggregate summary. The paper uses 3.
     """
     prompt_mode: PromptMode
     exec_mode: ExecMode
     with_context: bool
+    num_runs: int = 1
+
+    def __post_init__(self) -> None:
+        if self.num_runs < 1:
+            raise ValueError(f"num_runs must be >= 1, got {self.num_runs}")
 
 
 PAPER_DEFAULT = RunConfig(
     prompt_mode="combined",
     exec_mode="violations-after",
     with_context=True,
+    num_runs=3,
 )
