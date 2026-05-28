@@ -505,165 +505,98 @@ def build_taxonomy_text(mode):
     return taxonomy_text
 
 # ---------------------------------------------------------------------------
-# Prompt templates — each is self-contained with {taxonomy_block} and
-# {invariants_violation_context} placeholders.  Use double-braces {{ }} to
-# escape literal braces in the JSON examples.
+# System prompt — verbatim paper version.
 #
-# Matches the 5 active templates from agentrx.judge.py:
-#   _TMPL_VIOLATIONS_BEFORE  ↔  BASE_SYSTEM_PROMPT_VIOLATIONS_BEFORE
-#   _TMPL_NO_CONTEXT         ↔  BASE_SYSTEM_PROMPT
-#   _TMPL_WITH_CONTEXT       ↔  BASE_SYSTEM_PROMPT_WITH_CONTEXT
-#   _TMPL_FAILURE            ↔  FAILURE_PROMPT
-#   STEP_INDEX_PROMPT_TEMPLATE (already defined above)  ↔  STEP_INDEX_PROMPT
+# The judge's system prompt is assembled at call time from four pieces:
+#   1. ``prompt_top``: role prime + task framing. The "and exactly which step
+#      index the failure occurred at." clause is appended only when the judge
+#      is also expected to localize the step (i.e. when ``is_failure_prompt``
+#      is False — see Phase 2 of stepbystep, which still asks for the index
+#      and discards it, matching the paper).
+#   2. ``taxonomy_section``: result of ``build_taxonomy_text(PROMPT_MODE)``.
+#   3. ``prompt_procedure``: one of three variants, branched ONLY on
+#      ``(invariants_violation_context, is_failure_prompt)``. EXECUTION_MODE
+#      ("violations-before" vs "violations-after") is a pipeline-ordering
+#      concern — it controls *when* invariants are computed and whether they
+#      are passed in, not how they are framed to the judge — so it is
+#      deliberately NOT read here.
+#   4. ``output_format``: branched only on ``is_failure_prompt``.
 # ---------------------------------------------------------------------------
 
-_TMPL_VIOLATIONS_BEFORE = """
-GIVEN INPUT:
-- a full trajectory of an agent's interaction with a user (step-indexed)
-- the ground-truth tool-call/action sequence the agent should have made
-- optional: expected responses/outputs for some steps
-
-YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
-
-You are also provided a list of violations that have been generated through the trajectory through various invariants. Use these to help you identify the root cause category, failure step and agent.
-Static invariants have been generated through the domain policy and system prompt. Each static invariant is associated with a tool call to ensure it adheres to the domain policy.
-Dynamic invariants have been generated to cover computation checks, data accuracy, argument validity, and tool output consistency.
-Each invariant returns a boolean, and if it returns false, it indicates a violation. Note that some violations may be false positives and not all violations may be relevant to the root cause failure.
-
-Here are the list of violations noted by static and dynamic invariants:
-
-{invariants_violation_context}
-
-FAILURE TAXONOMY CATEGORIES:
-{taxonomy_block}
-
-ROOT-CAUSE DETECTION ALGORITHM:
-
-Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
-Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
-Step 3 — Decide and continue:
-If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
-If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
-
-Output a JSON object in the following format:
-{{
-    "reason_for_failure": <string>,
-    "failure_case": <int 1-10>,
-    "reason_for_index": <string>,
-    "index": <int>
-}}
-""".strip()
-
-_TMPL_NO_CONTEXT = """
-GIVEN INPUT:
-- a full trajectory of an agent's interaction with a user (step-indexed)
-- the ground-truth tool-call/action sequence the agent should have made
-- optional: expected responses/outputs for some steps
-
-YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
-
-FAILURE TAXONOMY CATEGORIES:
-{taxonomy_block}
-
-ROOT-CAUSE DETECTION ALGORITHM:
-
-Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
-Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
-Step 3 — Decide and continue:
-If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
-If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
-
-Output a JSON object in the following format:
-{{
-    "taxonomy_checklist_reasoning": <string>,
-    "reason_for_failure": <string>,
-    "failure_case": <int 1-10>,
-    "reason_for_index": <string>,
-    "index": <int>
-}}
-""".strip()
-
-_TMPL_WITH_CONTEXT = """
-GIVEN INPUT:
-- a full trajectory of an agent's interaction with a user (step-indexed)
-- the ground-truth tool-call/action sequence the agent should have made
-- optional: expected responses/outputs for some steps
-
-YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
-
-FAILURE TAXONOMY CATEGORIES:
-{taxonomy_block}
-
-ROOT-CAUSE DETECTION ALGORITHM:
-
-Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
-Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
-Step 3 — Decide and continue:
-If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
-If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
-
-You are also provided a list of violations that have been generated through the trajectory through various invariants. Use these to help you identify the root cause category, failure step and agent.
-Static invariants have been generated through the domain policy and system prompt. Each static invariant is associated with a tool call to ensure it adheres to the domain policy.
-Dynamic invariants have been generated to cover computation checks, data accuracy, argument validity, and tool output consistency.
-Each invariant returns a boolean, and if it returns false, it indicates a violation. Note that some violations may be false positives and not all violations may be relevant to the root cause failure.
-
-Here are the list of violations noted by static and dynamic invariants:
-
-{invariants_violation_context}
-
-Output a JSON object in the following format:
-{{
-    "taxonomy_checklist_reasoning": <string>,
-    "reason_for_failure": <string>,
-    "failure_case": <int 1-10>,
-    "reason_for_index": <string>,
-    "index": <int>
-}}
-""".strip()
-
-_TMPL_FAILURE = """
-GIVEN INPUT:
-- a full trajectory of an agent's interaction with a user (step-indexed)
-- the ground-truth tool-call/action sequence the agent should have made
-- the exact step index at which the failure occurs
-
-YOUR TASK is to determine why the agent failed and which failure category applies from the taxonomy below.
-
-FAILURE TAXONOMY CATEGORIES:
-{taxonomy_block}
-
-You are also provided a list of violations that have been generated through the trajectory through various invariants. Use these to help you identify the root cause category, failure step and agent.
-Static invariants have been generated through the domain policy and system prompt. Each static invariant is associated with a tool call to ensure it adheres to the domain policy.
-Dynamic invariants have been generated to cover computation checks, data accuracy, argument validity, and tool output consistency.
-Each invariant returns a boolean, and if it returns false, it indicates a violation. Note that some violations may be false positives and not all violations may be relevant to the root cause failure.
-
-Here are the list of violations noted by static and dynamic invariants:
-
-{invariants_violation_context}
-
-Output a JSON object in the following format:
-{{
-    "reason_for_failure": <string>,
-    "failure_case": <int 1-10>
-}}
-""".strip()
-
-
 def get_system_prompt(invariants_violation_context=None, is_failure_prompt=False):
-    """Build the system prompt by selecting the right template and formatting it."""
-    taxonomy_block = build_taxonomy_text(PROMPT_MODE)
-    inv = invariants_violation_context or ""
+    taxonomy_section = build_taxonomy_text(PROMPT_MODE)
+
+    prompt_top = """
+You are an Expert Failure-Categorization Judge. You will be provided with a trajectory of an agent's interaction with a user.
+Given:
+- a full trajectory of an agent's conversation with the user (step-indexed)
+- the ground-truth tool-call sequence the agent should have made and
+- (optional) Further, sometimes you may also be provided with a set of responses that the agent should have made in its response to the user at some step in the trajectory. Along with them, we will supply a boolean value indicating whether the agent's response included that output or not.
+
+YOUR TASK is determine why the agent failed, which failure category applies from the taxonomy below.
+"""
+    if not is_failure_prompt:
+        prompt_top += "and exactly which step index the failure occurred at.\n"
+
+    prompt_top += f"{taxonomy_section}\n"
+
+    if invariants_violation_context and not is_failure_prompt:
+        prompt_procedure = f"""
+You are also provided a list of violations that have been generated through the trajectory through various invariants. Use these to help you identify the root cause category, failure step and agent.
+Static invariants have been generated through the domain policy and system prompt. Each static invariant is associated with a tool call to ensure it adheres to the domain policy.
+Dynamic invariants have been generated to cover computation checks, data accuracy, argument validity, and tool output consistency.
+Each invariant returns a boolean, and if it returns false, it indicates a violation. Note that some violations may be false positives and not all violations may be relevant to the root cause failure.
+
+Here are the list of violations noted by static and dynamic invariants:
+
+{invariants_violation_context}
+
+ROOT-CAUSE DETECTION ALGORITHM:
+
+Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start. The first step where the agent deviates from the intended plan or emits an error is the first failure. Record the step index and a short failure note.
+Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
+Step 3 — Decide and continue:
+If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
+If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
+"""
+    elif invariants_violation_context and is_failure_prompt:
+        prompt_procedure = f"""
+You are also provided a list of violations that have been generated through the trajectory through various invariants. 
+Here are the list of violations noted by static and dynamic invariants:
+{invariants_violation_context}
+"""
+    else:
+        prompt_procedure = """
+How to Judge (Decision Procedure):
+
+Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start. The first step where the agent deviates from the intended plan or emits an error is the first failure. Record the step index and a short failure note.
+Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
+Step 3 — Decide and continue:
+If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
+If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
+"""
 
     if is_failure_prompt:
-        template = _TMPL_FAILURE
-    elif invariants_violation_context and EXECUTION_MODE == "violations-before":
-        template = _TMPL_VIOLATIONS_BEFORE
-    elif invariants_violation_context:
-        template = _TMPL_WITH_CONTEXT
+        output_format = """
+Output a JSON object in the following format:
+{
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>
+}
+"""
     else:
-        template = _TMPL_NO_CONTEXT
+        output_format = """
+Output a JSON object in the following format:
+{
+    "taxonomy_checklist_reasoning": <string>,  // Reasoning based on the taxonomy checklist (if applicable)
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>,
+    "reason_for_index": <string>,
+    "index": <int>
+}
+"""
 
-    return template.format(taxonomy_block=taxonomy_block, invariants_violation_context=inv)
+    return (prompt_top + prompt_procedure + output_format).strip()
 
 
 # --- Synth Normalizer (from Updated) ---
@@ -901,14 +834,20 @@ def get_llm_judge_class():
                 if failure_index is None:
                     raise RuntimeError(f"Step 1 Index Parse Error after {max_retries} attempts: {last_error}")
 
-                # Phase 2: Get Failure Category with retry logic
+                # Phase 2: Get Failure Category with retry logic.
+                # Paper spec: Phase 2 uses the FULL system prompt (same shape
+                # as the single-pass call), NOT a stripped failure-only prompt.
+                # The user message is the unmodified trajectory — the Phase 1
+                # index is NOT injected into the user message, otherwise the
+                # judge anchors on it and step localization in Phase 2 leaks
+                # into the category decision. We deliberately discard any
+                # ``index`` field returned by Phase 2 and keep Phase 1's
+                # ``failure_index`` as the canonical step number.
                 failure_system_prompt = get_system_prompt(
-                    invariants_violation_context=invariants_violation_context, 
-                    is_failure_prompt=True
+                    invariants_violation_context=invariants_violation_context,
+                    is_failure_prompt=False
                 )
-                
-                user_message_b = f"{user_message}\n\nFAILURE STEP INDEX: {failure_index}\n\n"
-                
+
                 completion = None
                 last_error = None
                 for attempt in range(1, max_retries + 1):
@@ -916,7 +855,7 @@ def get_llm_judge_class():
                         resp_cat = self.get_llm_response(
                             messages=[
                                 {"role": "system", "content": failure_system_prompt},
-                                {"role": "user", "content": user_message_b}
+                                {"role": "user", "content": user_message}
                             ]
                         )
                         completion = self._parse_json_response(resp_cat, "Step 2 Category")
