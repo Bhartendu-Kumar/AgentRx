@@ -33,14 +33,13 @@ FAILURE_CASE_TO_CATEGORY = {
 # Reverse mapping: category name to number
 CATEGORY_TO_FAILURE_CASE = {v: k for k, v in FAILURE_CASE_TO_CATEGORY.items()}
 
-# Ground truth file paths by domain
+# Ground truth file paths by domain (relative to repository root).
 DOMAIN_GROUND_TRUTH_PATHS = {
-    "tau": "ground_truth_tau_retail.json",
-    "flash": "pipeline/flash_dataset.json",
-    "magentic": "../dataset/magentic_one.json"
+    "tau":      "data/ground_truth/tau_ground_truth.json",
+    "magentic": "data/ground_truth/magentic_one_ground_truth.json",
+    "flash":    "data/ground_truth/flash_ground_truth.json",
 }
 
-# Default ground truth file path (for backward compatibility)
 GROUND_TRUTH_PATH = DOMAIN_GROUND_TRUTH_PATHS["tau"]
 
 
