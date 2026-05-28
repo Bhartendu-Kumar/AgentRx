@@ -150,6 +150,43 @@ When `--num-runs > 1`, the wrapper invokes
 the mean/std/CV table the paper reports under
 `judge_output/aggregate_summary.json`.
 
+### What this repo reproduces directly
+
+End-to-end from a fresh clone you can reproduce, on the trajectories shipped under [data/](data/):
+
+- **τ-bench retail rows** of Tables 4, 5, 6 — all `prompt_mode` × `exec_mode` × `with_context` cells.
+- **Magentic-One rows** of Tables 4, 5, 6 — same axes, run over the 44-trajectory `magentic_dataset/`.
+- **Magentic\*** (27-trajectory subset) rows — once you constrain inputs to the ids in [data/ground_truth/magentic_star_ids.json](data/ground_truth/magentic_star_ids.json). The id list is shipped; a `--subset` CLI filter is not yet wired into `run.py` (planned), so today you must filter input files manually.
+- **Table 3 (token statistics)** — derivable from per-run `judge_output/*.json` (a paper-format renderer is not yet ported into this repo; see below).
+
+### What this repo does not reproduce, and why
+
+- **Flash domain (Tables 4, 5, 6, and the Flash policy used by static invariant generation).** The Flash dataset is Microsoft-internal production incident data and cannot be redistributed. No GT or trajectories are shipped, and there is no public Flash policy. Flash rows of the paper cannot be reproduced from this repo alone.
+- **Table 2 (comparison against Who&When).** Requires running an external baseline; see the next section.
+- **Sampling determinism for `gpt-5` / `o3`.** The paper does not specify `temperature`, `top_p`, `seed`, or `max_tokens` for the judge LLM, and the underlying models are not bit-exact reproducible. Expect cell-level deviations within the n=3 standard deviations the paper reports.
+- **Headline 23.6% / 22.9% improvement figures from the abstract.** Those numbers are not traceable to a specific table cell in the camera-ready and cannot be regenerated from a single sweep.
+- **Constraint-generator prompts in the paper appendix** (sections marked `\TODO{}` in the LaTeX source). The actual prompts live in [agentrx/invariants/static_invariant_generator.py](agentrx/invariants/static_invariant_generator.py) / [dynamic_invariant_generator.py](agentrx/invariants/dynamic_invariant_generator.py); the paper text is incomplete, not the code.
+
+### Reproducing Table 2 (Who&When comparison)
+
+Table 2 compares AgentRx's judge against the **Who&When** (W&W) failure-attribution baseline, plus a prompt-modified variant the paper calls **W&W\***. W&W is third-party code with its own license and is not vendored here. To reproduce the table:
+
+1. Clone the upstream W&W repository:
+
+   ```bash
+   git clone https://github.com/mingyin1/Agents_Failure_Attribution
+   ```
+
+2. Run W&W's `Lib/utils.py:all_at_once` (and/or `step_by_step` / `binary_search`) judges against the 16-trajectory subset already shipped under [data/magentic_dataset_whowhen/](data/magentic_dataset_whowhen/). This subset is the intersection of the 44 Magentic GT trajectories with W&W's input-staging format, which is what the paper evaluates on.
+
+3. To reproduce the **W&W\*** row, apply the single prompt modification the paper specifies (`eval.tex` §4.2, "first unrecoverable critical step"): in W&W's prompt templates, replace `"the first mistake"` / `"first error"` / `"first made mistake"` with `"first UNRECOVERABLE critical mistake"`. Leave everything else (system prompt, ground-truth-in-prompt convention, output format, regex parsing) untouched so W&W's own `evaluate.py` works unmodified.
+
+4. Run AgentRx's judge against the same 16-trajectory subset under the paper-default recipe (see above) for the AgentRx row.
+
+5. Compare step-accuracy on those 16 trajectories. The paper reports W&W's `all_at_once` variant at ~12.5% on Magentic, W&W\* materially higher, and AgentRx materially higher again.
+
+A turnkey W&W runner has intentionally not been ported here pending a license/attribution review for the upstream `mingyin1` code; the procedure above is the supported path.
+
 ---
 
 ## Configuration
