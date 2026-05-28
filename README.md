@@ -114,6 +114,44 @@ AgentRx/
 
 ---
 
+## Reproducing the Paper
+
+The paper-default recipe is encoded in `agentrx.pipeline.profiles.PAPER_DEFAULT`
+and is what `run.py` uses when no judge-stage flags are passed:
+
+```
+prompt_mode  = combined            # taxonomy block fed to the judge
+exec_mode    = violations-after    # when category labelling sees violations
+with_context = True                # inject deduplicated violation context
+num_runs     = 3                   # paper reports mean ± std over n=3 runs
+```
+
+```bash
+# Paper-default: produces runs/<name>/judge_output/runs/run{1..3}.json plus
+# an aggregate summary with mean/std for every table cell.
+python run.py trajectory.json
+```
+
+Each axis is overridable on the CLI to reproduce specific ablation cells. The
+flags compose orthogonally; omitted flags inherit from `PAPER_DEFAULT`.
+
+| Flag | Values | Paper cell |
+|------|--------|------------|
+| `--prompt-mode` | `baseline` \| `checklist` \| `examples` \| `combined` | Tables 2, 4 (prompt-mode ablations) |
+| `--exec-mode` | `violations-after` \| `stepbystep` \| `violations-before` | Tables 3, 5 (execution-mode ablations) |
+| `--no-context` | (flag) | "Without violation context" rows |
+| `--num-runs N` | integer ≥ 1 | Set to `1` for fast smoke tests (skips aggregate) |
+| `--dynamic-mode` | `stepbystep` \| `oneshot` | Table 3 (one-shot dynamic invariants) |
+| `--skip-static` | (flag) | Dynamic-only ablation |
+| `--skip-dynamic` | (flag) | Global/static-only ablation |
+
+When `--num-runs > 1`, the wrapper invokes
+`agentrx.judge.judge.create_aggregate_summary` after the loop, which writes
+the mean/std/CV table the paper reports under
+`judge_output/aggregate_summary.json`.
+
+---
+
 ## Configuration
 
 LLM settings are loaded from environment variables (via `.env` or shell):
