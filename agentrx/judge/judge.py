@@ -32,6 +32,7 @@ try:
     
     # Analysis & Pipeline tools
     from agentrx.reports.analyze_failure_frequencies import load_and_analyze_json, plot_predicted_frequency, plot_ground_truth_frequency, plot_comparison
+    from agentrx.reports.step_accuracy import step_distance_to_nearest_gt
     from agentrx.ir.trajectory_ir import tau_bench_ir, load_trajectories, flash_ir, magentic_ir, validate_ir, llm_ir, ensure_ir
     from agentrx.invariants.domain_registry import DOMAIN_REGISTRY, get_domain_config, register_domain
 except ImportError:
@@ -264,7 +265,7 @@ class FailureCase(Enum):
     INCONCLUSIVE = 10
 
 class Failure:
-    def __init__(self, task_id, failure_case, description, step_number, checklist_reasoning=None):
+    def __init__(self, task_id, failure_case, description, step_number, checklist_reasoning=None, gt_step_numbers=None):
         self.task_id = task_id
         if isinstance(failure_case, int):
             try:
@@ -277,6 +278,11 @@ class Failure:
         self.description = description
         self.step_number = step_number
         self.checklist_reasoning = checklist_reasoning
+        # Only meaningful when this Failure represents the ground truth for a
+        # task that may have multiple labelled failures: the full sorted set of
+        # GT failure step indices. For prediction Failures this stays None and
+        # downstream code falls back to (step_number,).
+        self.gt_step_numbers = tuple(sorted(int(s) for s in gt_step_numbers)) if gt_step_numbers else None
 
 class Report:
     def __init__(self, task_id, trajectory_length=1):
@@ -332,6 +338,7 @@ class Report:
         step_numbers = [f.step_number for f in self.failures]
         gt_failure_case = gt_failure.failure_case
         gt_step_number = gt_failure.step_number
+        gt_step_numbers = gt_failure.gt_step_numbers or (gt_step_number,)
         total = len(self.failures)
 
         if total == 0:
@@ -361,9 +368,11 @@ class Report:
         self.step_min = min(step_numbers) if step_numbers else 0
         self.step_max = max(step_numbers) if step_numbers else 0
         
-        # Comparison to Ground Truth
+        # Comparison to Ground Truth — step distance is computed against the
+        # NEAREST GT failure step, not a positional pick, so a correct hit on
+        # a non-first failure in a multi-failure trajectory still counts.
         failure_matches = [fc == gt_failure_case for fc in failure_cases]
-        step_abs_errors = [abs(s - gt_step_number) for s in step_numbers]
+        step_abs_errors = [step_distance_to_nearest_gt(s, gt_step_numbers) for s in step_numbers]
 
         self.failure_case_accuracy = sum(failure_matches) / total if total > 0 else 0
         self.step_mae = mean(step_abs_errors) if step_abs_errors else 0
@@ -371,6 +380,7 @@ class Report:
 
         self.gt_failure_case = str(gt_failure.failure_case.value)
         self.gt_step_number = gt_failure.step_number
+        self.gt_step_numbers = list(gt_step_numbers)
         self.gt_failure_description = gt_failure.description
 
 # --- Few-Shot Examples (from Refactored) ---
@@ -1180,7 +1190,18 @@ def load_failures_from_json(file_path):
     failures = []
     for item in items:
         # Support both old and new gt formats if possible
-        
+
+        # All labelled GT failure steps for this trajectory — the metric scores
+        # a prediction against the NEAREST of these, not the root cause alone.
+        all_gt_steps = None
+        if isinstance(item.get("failures"), list) and item["failures"]:
+            try:
+                all_gt_steps = tuple(
+                    sorted(int(f.get("step_number", 0)) for f in item["failures"])
+                )
+            except (TypeError, ValueError):
+                all_gt_steps = None
+
         # Check for new format (root_cause object)
         if 'root_cause' in item and isinstance(item['root_cause'], dict):
             try:
@@ -1195,7 +1216,8 @@ def load_failures_from_json(file_path):
                              task_id=task_id,
                              failure_case=convert_to_failure_case(rc_failure.get('failure_category') or rc_failure.get('failure_case')),
                              description=item['root_cause'].get('reason_for_root_cause', ""),
-                             step_number=int(rc_failure.get('step_number', 0))
+                             step_number=int(rc_failure.get('step_number', 0)),
+                             gt_step_numbers=all_gt_steps,
                          ))
                          continue
 
@@ -1204,7 +1226,8 @@ def load_failures_from_json(file_path):
                     task_id=task_id,
                     failure_case=convert_to_failure_case(item['root_cause'].get('failure_category') or item['root_cause'].get('failure_case') or "inconclusive"),
                     description=item['root_cause'].get('reason_for_root_cause', ""),
-                    step_number=int(item['root_cause'].get('index', 0))
+                    step_number=int(item['root_cause'].get('index', 0)),
+                    gt_step_numbers=all_gt_steps,
                 ))
             except Exception as e:
                 print(f"Error parsing item {item.get('trajectory_id')}: {e}")
@@ -1218,7 +1241,8 @@ def load_failures_from_json(file_path):
                 task_id=item.get("task_id", item.get("trajectory_id")), 
                 failure_case=convert_to_failure_case(fc_val), 
                 description=item.get("reason_for_failure", ""), 
-                step_number=int(item.get("index", item.get("failure_step", 0)))
+                step_number=int(item.get("index", item.get("failure_step", 0))),
+                gt_step_numbers=all_gt_steps,
             ))
     
     # Debug: print loaded failures
@@ -1262,8 +1286,12 @@ def analysis(data, output_file_path=None, model_name=None, api_version=None):
         # step_mean might be float
         step_mean = task.get('step_mean', 0)
         gt_step = task.get('gt_step_number', 0)
-        
-        distance = abs(step_mean - gt_step)
+        # Distance / step-accuracy are measured against the NEAREST GT failure
+        # step for the trajectory; ``gt_step_number`` (root cause) is only a
+        # fallback for old reports without the full GT-step set.
+        gt_steps = task.get('gt_step_numbers') or [gt_step]
+        step_error = step_distance_to_nearest_gt(step_mean, gt_steps)
+        distance = step_error
         trajectory_length = task.get('trajectory_length', 1)
         normalized_distance = distance / trajectory_length if trajectory_length > 0 else distance
         
@@ -1278,14 +1306,14 @@ def analysis(data, output_file_path=None, model_name=None, api_version=None):
             incorrect_distance += distance
             incorrect_normalized_distance += normalized_distance
         
-        # Step accuracy (rounded)
-        if round(step_mean) == gt_step:
+        # Step accuracy: prediction is "correct" iff its rounded step lands on
+        # ANY GT failure step.
+        if step_error == 0:
             correct_step_predictions += 1
         else:
             incorrect_step_predictions += 1
         
-        # Tolerance-based step accuracy
-        step_error = abs(round(step_mean) - gt_step)
+        # Tolerance-based step accuracy (same nearest-GT distance).
         for tolerance in [1, 2, 3, 4, 5]:
             if step_error <= tolerance:
                 step_within_tolerance[tolerance] += 1
@@ -1498,7 +1526,11 @@ def load_and_analyze_run_for_metrics(json_path):
             if 'gt_failure_case' in r:
                 # Comparison logic
                 is_correct = str(r.get('failure_case')) == str(r.get('gt_failure_case'))
-                step_err = abs(int(r.get('step_number', 0)) - int(r.get('gt_step_number', 0)))
+                gt_step = int(r.get('gt_step_number', 0))
+                gt_steps = r.get('gt_step_numbers') or [gt_step]
+                step_err = step_distance_to_nearest_gt(
+                    r.get('step_mean', r.get('step_number', 0)), gt_steps
+                )
                 # For normalization, we need trajectory length. 
                 # Ideally report has 'trajectory_length'
                 traj_len = r.get('trajectory_length', 1)
