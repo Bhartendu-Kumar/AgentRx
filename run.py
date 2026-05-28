@@ -41,6 +41,7 @@ if sys.platform == "win32":
 REPO_ROOT = Path(__file__).resolve().parent
 
 import agentrx.pipeline.globals as g
+from agentrx.pipeline.profiles import RunConfig, PAPER_DEFAULT
 
 # ---------- Stage definitions ----------
 
@@ -375,9 +376,17 @@ def run_check(ir_path: str, run_dir: str, domain: str, endpoint: str,
 # ---------- Stage: Judge ----------
 
 def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
-              violation_context_dir: str = None, ground_truth_file: str = None) -> str:
-    """Run LLM-as-a-Judge. Returns path to judge output directory."""
+              violation_context_dir: str = None, ground_truth_file: str = None,
+              config: RunConfig = None) -> str:
+    """Run LLM-as-a-Judge. Returns path to judge output directory.
+
+    config selects the paper-table-cell recipe (prompt_mode / exec_mode /
+    with_context). Defaults to the paper-faithful recipe.
+    """
     import agentrx.judge.judge as judge_module
+
+    if config is None:
+        config = PAPER_DEFAULT
 
     banner("Stage 5/6: LLM-as-a-Judge")
 
@@ -387,9 +396,11 @@ def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
     # Set globals that judge.py expects
     judge_module.DOMAIN = domain
     judge_module.ENDPOINT_USED = endpoint
-    judge_module.PROMPT_MODE = "combined"
-    judge_module.EXECUTION_MODE = "violations-after"
-    judge_module.RUN_WITH_CONTEXT = violation_context_dir is not None
+    judge_module.PROMPT_MODE = config.prompt_mode
+    judge_module.EXECUTION_MODE = config.exec_mode
+    # with_context can only be honoured when the check stage produced a context
+    # directory; if it didn't, the profile's request collapses to False.
+    judge_module.RUN_WITH_CONTEXT = config.with_context and violation_context_dir is not None
     judge_module.USE_GROUND_TRUTH = ground_truth_file is not None
 
     if violation_context_dir:
