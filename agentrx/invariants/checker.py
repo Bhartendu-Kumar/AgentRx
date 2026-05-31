@@ -34,6 +34,7 @@ Outputs per trajectory (written to --out-dir/<task_id>/):
 import argparse
 import sys
 import os, json, re, time
+import signal
 import traceback 
 import io 
 from contextlib import redirect_stdout, redirect_stderr
@@ -82,6 +83,15 @@ DEBUG_INV_DUMP = os.getenv("DEBUG_INV_DUMP", "1") == "1"
 DEBUG_ONLY_ASSERTION = os.getenv("DEBUG_ONLY_ASSERTION", "").strip() 
 DEBUG_MAX_JSON_CHARS = safe_int(os.getenv("DEBUG_MAX_JSON_CHARS", "4000")) or 4000 
 DEBUG_MAX_TEXT_CHARS = safe_int(os.getenv("DEBUG_MAX_TEXT_CHARS", "600")) or 600
+
+# Hard wall-clock cap for a single LLM-generated python_check (exec + fn call).
+# Prevents infinite loops in generated code from hanging the whole sweep.
+PYCHECK_TIMEOUT_SEC = safe_int(os.getenv("AGENTRX_PYCHECK_TIMEOUT_SEC", "30")) or 30
+
+
+class PyCheckTimeout(Exception):
+    """Raised when a python_check exceeds PYCHECK_TIMEOUT_SEC wall-clock seconds."""
+
 
 def dbg(msg: str) -> None:
     if DEBUG:
@@ -651,45 +661,58 @@ class AllVerifier:
    
             cap_out = io.StringIO()
             cap_err = io.StringIO()
-            if DEBUG_PY_CAPTURE_STDOUT and DEBUG_PY_EXEC and focus_inv(invariant):
-                with redirect_stdout(cap_out), redirect_stderr(cap_err):
-                    exec(code, glb, loc)
-            else:
-                exec(code, glb, loc)
 
-            if function_name not in loc:
-                end_time = time.perf_counter()
+            # Install SIGALRM timeout around exec + fn invocation so an
+            # infinite loop in LLM-generated code cannot hang the sweep.
+            def _pycheck_alarm_handler(_signum, _frame):
+                raise PyCheckTimeout(
+                    f"python_check '{assertion_name}' exceeded {PYCHECK_TIMEOUT_SEC}s"
+                )
+            _prev_handler = signal.signal(signal.SIGALRM, _pycheck_alarm_handler)
+            signal.alarm(PYCHECK_TIMEOUT_SEC)
+            try:
+                if DEBUG_PY_CAPTURE_STDOUT and DEBUG_PY_EXEC and focus_inv(invariant):
+                    with redirect_stdout(cap_out), redirect_stderr(cap_err):
+                        exec(code, glb, loc)
+                else:
+                    exec(code, glb, loc)
+
+                if function_name not in loc:
+                    end_time = time.perf_counter()
+
+                    if DEBUG_PY_EXEC and focus_inv(invariant):
+                        dbg(f"[PY] ERROR function not found: {function_name!r}")
+                        dbg(f"[PY] available locals: {sorted(list(loc.keys()))[:50]}")
+                        if DEBUG_PY_CAPTURE_STDOUT:
+                            o = cap_out.getvalue()
+                            e = cap_err.getvalue()
+                            if o.strip():
+                                dbg(f"[PY] captured stdout:\n{short(o, n=2000)}")
+                            if e.strip():
+                                dbg(f"[PY] captured stderr:\n{short(e, n=2000)}")
+
+                    self.telemetry.append(CheckTelemetry(
+                        task_id=task_id,
+                        step_index=step_pos,
+                        assertion_name=assertion_name,
+                        check_type="python_check",
+                        check_time_sec=round(end_time - start, 4),
+                        success=False,
+                        error=f"Function '{function_name}' not found",
+                        check_input={"function_name": function_name, "code_length": len(code)},
+                        check_output=None
+                    ))
+                    return None
+
+                fn = loc[function_name]
 
                 if DEBUG_PY_EXEC and focus_inv(invariant):
-                    dbg(f"[PY] ERROR function not found: {function_name!r}")
-                    dbg(f"[PY] available locals: {sorted(list(loc.keys()))[:50]}")
-                    if DEBUG_PY_CAPTURE_STDOUT:
-                        o = cap_out.getvalue()
-                        e = cap_err.getvalue()
-                        if o.strip():
-                            dbg(f"[PY] captured stdout:\n{short(o, n=2000)}")
-                        if e.strip():
-                            dbg(f"[PY] captured stderr:\n{short(e, n=2000)}")
+                    dbg(f"[PY] calling {function_name}(traj, step_pos)")
 
-                self.telemetry.append(CheckTelemetry(
-                    task_id=task_id,
-                    step_index=step_pos,
-                    assertion_name=assertion_name,
-                    check_type="python_check",
-                    check_time_sec=round(end_time - start, 4),
-                    success=False,
-                    error=f"Function '{function_name}' not found",
-                    check_input={"function_name": function_name, "code_length": len(code)},
-                    check_output=None
-                ))
-                return None
-            
-            fn = loc[function_name]
-
-            if DEBUG_PY_EXEC and focus_inv(invariant):
-                dbg(f"[PY] calling {function_name}(traj, step_pos)")
-
-            result = fn(traj, step_pos)
+                result = fn(traj, step_pos)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, _prev_handler)
 
             if DEBUG_PY_EXEC and focus_inv(invariant):
                 dbg(f"[PY] raw result type={type(result)} value={result!r}")
