@@ -60,6 +60,22 @@ DEBUG = os.getenv("DEBUG", "0") == "1"
 DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "0") == "1"
 DEBUG_SYNTH = os.getenv("DEBUG_SYNTH", "0") == "1"
 
+# Ablation knobs (additive).
+# AGENTRX_NO_NL_VIO=1: drop nl_check violations from judge context (reproduces
+# the paper's "Without NL Check Viol." appendix table; default off).
+# AGENTRX_JUDGE_PROMPT_STYLE selects the system-prompt builder. Default is
+# "release" (originally-released f-string templates; validated on tau-29 n=3:
+# cat 0.425 / step 0.494 vs paper-mirror 0.414 / 0.379). Set to "paper" to
+# reproduce the paper-mirror concat builder exactly.
+NO_NL_VIO = os.getenv("AGENTRX_NO_NL_VIO", "0") == "1"
+JUDGE_PROMPT_STYLE = os.getenv("AGENTRX_JUDGE_PROMPT_STYLE", "release").strip().lower()
+if JUDGE_PROMPT_STYLE not in ("paper", "release"):
+    raise ValueError(f"AGENTRX_JUDGE_PROMPT_STYLE must be 'paper' or 'release', got: {JUDGE_PROMPT_STYLE!r}")
+if NO_NL_VIO:
+    print("[AGENTRX_NO_NL_VIO=1] Dropping nl_check violations from judge context.", flush=True)
+if JUDGE_PROMPT_STYLE == "paper":
+    print("[AGENTRX_JUDGE_PROMPT_STYLE=paper] Using paper-mirror concat judge prompt builder.", flush=True)
+
 def dbg(msg: str) -> None:
     if DEBUG:
         print(f"[DEBUG] {msg}")
@@ -532,7 +548,161 @@ def build_taxonomy_text(mode):
 #   4. ``output_format``: branched only on ``is_failure_prompt``.
 # ---------------------------------------------------------------------------
 
+# Originally-released f-string templates (kept verbatim from the pre-paper-mirror
+# release of judge.py for the AGENTRX_JUDGE_PROMPT_STYLE=release ablation path).
+# Section ordering: GIVEN INPUT / TAXONOMY / ALGORITHM / VIOLATIONS / OUTPUT.
+_REL_TMPL_WITH_CONTEXT = """
+GIVEN INPUT:
+- a full trajectory of an agent's interaction with a user (step-indexed)
+- the ground-truth tool-call/action sequence the agent should have made
+- optional: expected responses/outputs for some steps
+
+YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
+
+FAILURE TAXONOMY CATEGORIES:
+{taxonomy_block}
+
+ROOT-CAUSE DETECTION ALGORITHM:
+
+Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
+Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
+Step 3 — Decide and continue:
+If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
+If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
+
+You are also provided a list of violations that have been generated through the trajectory through various invariants. Use these to help you identify the root cause category, failure step and agent.
+Static invariants have been generated through the domain policy and system prompt. Each static invariant is associated with a tool call to ensure it adheres to the domain policy.
+Dynamic invariants have been generated to cover computation checks, data accuracy, argument validity, and tool output consistency.
+Each invariant returns a boolean, and if it returns false, it indicates a violation. Note that some violations may be false positives and not all violations may be relevant to the root cause failure.
+
+Here are the list of violations noted by static and dynamic invariants:
+
+{invariants_violation_context}
+
+Output a JSON object in the following format:
+{{
+    "taxonomy_checklist_reasoning": <string>,
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>,
+    "reason_for_index": <string>,
+    "index": <int>
+}}
+""".strip()
+
+_REL_TMPL_NO_CONTEXT = """
+GIVEN INPUT:
+- a full trajectory of an agent's interaction with a user (step-indexed)
+- the ground-truth tool-call/action sequence the agent should have made
+- optional: expected responses/outputs for some steps
+
+YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
+
+FAILURE TAXONOMY CATEGORIES:
+{taxonomy_block}
+
+ROOT-CAUSE DETECTION ALGORITHM:
+
+Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
+Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
+Step 3 — Decide and continue:
+If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
+If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
+
+Output a JSON object in the following format:
+{{
+    "taxonomy_checklist_reasoning": <string>,
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>,
+    "reason_for_index": <string>,
+    "index": <int>
+}}
+""".strip()
+
+_REL_TMPL_FAILURE = """
+GIVEN INPUT:
+- a full trajectory of an agent's interaction with a user (step-indexed)
+- the ground-truth tool-call/action sequence the agent should have made
+- optional: expected responses/outputs for some steps
+
+YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below.
+
+FAILURE TAXONOMY CATEGORIES:
+{taxonomy_block}
+
+You are also provided a list of violations that have been generated through the trajectory through various invariants.
+Here are the list of violations noted by static and dynamic invariants:
+
+{invariants_violation_context}
+
+Output a JSON object in the following format:
+{{
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>
+}}
+""".strip()
+
+_REL_TMPL_VIOLATIONS_BEFORE = """
+GIVEN INPUT:
+- a full trajectory of an agent's interaction with a user (step-indexed)
+- the ground-truth tool-call/action sequence the agent should have made
+- optional: expected responses/outputs for some steps
+
+You are also provided a list of violations that have been generated through the trajectory through various invariants. Use these to help you identify the root cause category, failure step and agent.
+Static invariants have been generated through the domain policy and system prompt. Each static invariant is associated with a tool call to ensure it adheres to the domain policy.
+Dynamic invariants have been generated to cover computation checks, data accuracy, argument validity, and tool output consistency.
+Each invariant returns a boolean, and if it returns false, it indicates a violation. Note that some violations may be false positives and not all violations may be relevant to the root cause failure.
+
+Here are the list of violations noted by static and dynamic invariants:
+
+{invariants_violation_context}
+
+YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
+
+FAILURE TAXONOMY CATEGORIES:
+{taxonomy_block}
+
+ROOT-CAUSE DETECTION ALGORITHM:
+
+Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
+Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
+Step 3 — Decide and continue:
+If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
+If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
+
+Output a JSON object in the following format:
+{{
+    "taxonomy_checklist_reasoning": <string>,
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>,
+    "reason_for_index": <string>,
+    "index": <int>
+}}
+""".strip()
+
+def _get_system_prompt_release(invariants_violation_context=None, is_failure_prompt=False):
+    """Originally-released prompt builder (pre-paper-mirror).
+
+    Section order: GIVEN-INPUT / TAXONOMY / ALGORITHM / VIOLATIONS / OUTPUT.
+    Activated when AGENTRX_JUDGE_PROMPT_STYLE=release. Used for the
+    paper-mirror-vs-release ablation only.
+    """
+    taxonomy_block = build_taxonomy_text(PROMPT_MODE)
+    inv = invariants_violation_context or ""
+
+    if is_failure_prompt:
+        template = _REL_TMPL_FAILURE
+    elif invariants_violation_context and EXECUTION_MODE == "violations-before":
+        template = _REL_TMPL_VIOLATIONS_BEFORE
+    elif invariants_violation_context:
+        template = _REL_TMPL_WITH_CONTEXT
+    else:
+        template = _REL_TMPL_NO_CONTEXT
+    return template.format(taxonomy_block=taxonomy_block, invariants_violation_context=inv)
+
+
 def get_system_prompt(invariants_violation_context=None, is_failure_prompt=False):
+    if JUDGE_PROMPT_STYLE == "release":
+        return _get_system_prompt_release(invariants_violation_context, is_failure_prompt)
     taxonomy_section = build_taxonomy_text(PROMPT_MODE)
 
     prompt_top = """
@@ -957,6 +1127,10 @@ def load_invariant_violation_context(task_id):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             context_data = json.load(f)
+            if NO_NL_VIO and isinstance(context_data, list):
+                before = len(context_data)
+                context_data = [v for v in context_data if not (isinstance(v, dict) and v.get("check_type") == "nl_check")]
+                print(f"[CONTEXT] [FILTER] AGENTRX_NO_NL_VIO=1: dropped {before - len(context_data)} nl_check violations (kept {len(context_data)})")
             print(f"[CONTEXT] [OK] Loaded violation context for task {task_id}: {file_path}")
             return context_data
     except FileNotFoundError:
