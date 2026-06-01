@@ -23,20 +23,21 @@ from dataclasses import asdict, dataclass
 from typing import List, Optional, Dict, Any
 
 # --- Imports from agent_verify framework ---
-try:
-    import agentrx.pipeline.globals as g
-    from agentrx.llm_clients.azure import LLMAgent as LLMAgentAzure
-    from agentrx.llm_clients.trapi import LLMAgent as LLMAgentTrapi
-    # Add metrics if available
-    import agentrx.reports.metrics as metrics
-    
-    # Analysis & Pipeline tools
-    from agentrx.reports.analyze_failure_frequencies import load_and_analyze_json, plot_predicted_frequency, plot_ground_truth_frequency, plot_comparison
-    from agentrx.reports.step_accuracy import step_distance_to_nearest_gt
-    from agentrx.ir.trajectory_ir import tau_bench_ir, load_trajectories, flash_ir, magentic_ir, validate_ir, llm_ir, ensure_ir
-    from agentrx.invariants.domain_registry import DOMAIN_REGISTRY, get_domain_config, register_domain
-except ImportError:
-    pass
+# These are hard dependencies: if any of them fails to import, the judge
+# module is unusable and we want the ImportError to surface at import time,
+# not later as a confusing AttributeError when the swallowed name is first
+# referenced. The pre-W4b try/except: pass swallow masked exactly those
+# bugs and was removed.
+import agentrx.pipeline.globals as g
+from agentrx.llm_clients.azure import LLMAgent as LLMAgentAzure
+from agentrx.llm_clients.trapi import LLMAgent as LLMAgentTrapi
+import agentrx.reports.metrics as metrics
+
+# Analysis & Pipeline tools
+from agentrx.reports.analyze_failure_frequencies import load_and_analyze_json, plot_predicted_frequency, plot_ground_truth_frequency, plot_comparison
+from agentrx.reports.step_accuracy import step_distance_to_nearest_gt
+from agentrx.ir.trajectory_ir import tau_bench_ir, load_trajectories, flash_ir, magentic_ir, validate_ir, llm_ir, ensure_ir
+from agentrx.invariants.domain_registry import DOMAIN_REGISTRY, get_domain_config, register_domain
 
 # --- Configurations ---
 
