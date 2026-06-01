@@ -1,0 +1,46 @@
+{
+  "_comment": "Canonical Azure OpenAI endpoint inventory for AgentRx. Single source of truth for which models live where. Used by agentrx/llm_clients/endpoint_registry.py. Authoritative; do not embed endpoint URLs anywhere else in the repo.",
+  "_scope": "This file lists ONLY endpoints that already appear elsewhere in this open-source repository (scripts/run_tau_ablation.py and the gitignored .env). Additional internal endpoints belong in a private registry overlay, not here.",
+  "default_model": "gpt-5",
+  "default_api_version": "2025-01-01-preview",
+  "default_endpoints_for_gpt5": [
+    "https://aiops-llm-eus2.openai.azure.com/",
+    "https://aiops-llm-ch.openai.azure.com/",
+    "https://aiops-llm-eus.openai.azure.com/",
+    "https://aipos-llm-sw.openai.azure.com/"
+  ],
+  "endpoints": [
+    {
+      "name": "aiops-llm-eus2",
+      "url": "https://aiops-llm-eus2.openai.azure.com/",
+      "location": "East US 2",
+      "deployments": {
+        "gpt-5": {"deployment": "gpt-5", "api_version": "2025-01-01-preview"}
+      }
+    },
+    {
+      "name": "aiops-llm-eus",
+      "url": "https://aiops-llm-eus.openai.azure.com/",
+      "location": "East US",
+      "deployments": {
+        "gpt-5": {"deployment": "gpt-5", "api_version": "2025-01-01-preview"}
+      }
+    },
+    {
+      "name": "aiops-llm-ch",
+      "url": "https://aiops-llm-ch.openai.azure.com/",
+      "location": "Switzerland North",
+      "deployments": {
+        "gpt-5": {"deployment": "gpt-5", "api_version": "2025-01-01-preview"}
+      }
+    },
+    {
+      "name": "aipos-llm-sw",
+      "url": "https://aipos-llm-sw.openai.azure.com/",
+      "location": "Sweden Central",
+      "deployments": {
+        "gpt-5": {"deployment": "gpt-5", "api_version": "2025-01-01-preview"}
+      }
+    }
+  ]
+}
