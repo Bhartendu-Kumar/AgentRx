@@ -38,27 +38,54 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
+# scripts/ is a sibling of agentrx/; add the repo root so this script can be
+# invoked either as `python -m scripts.run_tau_ablation` (which sets sys.path
+# automatically) or as `python scripts/run_tau_ablation.py` (which does not).
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from agentrx.llm_clients import endpoint_registry as _registry  # noqa: E402
+from agentrx.llm_clients.model_spec import from_registry as _spec_from_registry  # noqa: E402
 
 SRC_PATTERN = "runs/azure_tau29_{tid}"
 OUT_ROOT = REPO_ROOT / "runs" / "ablation"
 GT_PATH = REPO_ROOT / "data" / "ground_truth" / "tau_ground_truth.json"
 
-# Endpoints (excluding aiops-llm-eus2 which the live flash sweep holds).
-ENDPOINTS = {
-    "eus": "https://aiops-llm-eus.openai.azure.com/",
-    "ch":  "https://aiops-llm-ch.openai.azure.com/",
-    "sw":  "https://aipos-llm-sw.openai.azure.com/",
-}
-
-# Cell catalogue: (name, extra CLI flags for run.py, endpoint_key).
+# Cell catalogue: (name, extra CLI flags for run.py, endpoint_name).
+# The endpoint_name is resolved against agentrx.llm_clients.endpoint_registry
+# at script startup; this script holds NO endpoint URLs of its own. To run
+# this matrix against a different endpoint pool, edit config/endpoints.json.
+#
+# We deliberately avoid pinning any cell to aiops-llm-eus2 so this matrix can
+# coexist with an in-flight flash sweep (which holds eus2). All three other
+# endpoints from the default gpt-5 pool are exercised.
+#
 # These flags map onto RunConfig.prompt_style and
 # RunConfig.include_nl_check_violations via run.py's argparser.
 CELLS: list[tuple[str, list[str], str]] = [
-    ("paper_nl_on",    ["--prompt-style", "paper",   "--include-nl-violations"], "eus"),
-    ("paper_nl_off",   ["--prompt-style", "paper",   "--exclude-nl-violations"], "ch"),
-    ("release_nl_on",  ["--prompt-style", "release", "--include-nl-violations"], "sw"),
-    ("release_nl_off", ["--prompt-style", "release", "--exclude-nl-violations"], "eus"),
+    ("paper_nl_on",    ["--prompt-style", "paper",   "--include-nl-violations"], "aiops-llm-eus"),
+    ("paper_nl_off",   ["--prompt-style", "paper",   "--exclude-nl-violations"], "aiops-llm-ch"),
+    ("release_nl_on",  ["--prompt-style", "release", "--include-nl-violations"], "aipos-llm-sw"),
+    ("release_nl_off", ["--prompt-style", "release", "--exclude-nl-violations"], "aiops-llm-eus"),
 ]
+
+
+def _resolve_cell_endpoints() -> dict[str, str]:
+    """Resolve every endpoint name referenced by CELLS to its URL.
+
+    Fails fast if any cell references an endpoint not in the registry,
+    or if any cell happens to pin the contended ``aiops-llm-eus2`` endpoint.
+    """
+    resolved: dict[str, str] = {}
+    for _, _, name in CELLS:
+        if name == "aiops-llm-eus2":
+            raise RuntimeError(
+                f"cell endpoint pinning regression: {name!r} is reserved "
+                "for the live flash sweep and must not be reused here"
+            )
+        entry = _registry.get_endpoint_by_name(name)  # raises KeyError if unknown
+        resolved[name] = entry["url"]
+    return resolved
 
 # Symlinked artifacts (read-only inputs to the judge stage).
 SYMLINK_ARTIFACTS = [
@@ -206,15 +233,32 @@ def main() -> None:
         print(f"No cells matched {args.cells}; valid: {valid}", file=sys.stderr)
         sys.exit(2)
 
+    # Resolve all endpoint URLs up-front via the canonical registry. If any
+    # cell references an unknown endpoint name, fail BEFORE launching cells.
+    cell_endpoints = _resolve_cell_endpoints()
+    default_model = _registry.get_default_model()
+
     print(f"=== Ablation matrix: {len(cells_to_run)} cells × {len(task_ids)} tasks × n={args.num_runs} ===")
-    for n, e, ep in cells_to_run:
-        print(f"  cell={n:<16} flags={e} endpoint={ENDPOINTS[ep]}")
+    print(f"  registry model={default_model} default_pool={_registry.get_default_endpoints()}")
+    for n, e, ep_name in cells_to_run:
+        print(f"  cell={n:<16} flags={e} endpoint={ep_name} -> {cell_endpoints[ep_name]}")
+
+    # Record the resolved per-cell spec (model + endpoint + api_version +
+    # deployment) so the matrix summary is self-describing without referring
+    # back to the registry state at run time.
+    resolved_specs = {
+        ep_name: _spec_from_registry(
+            model_name=default_model,
+            endpoint_url=url,
+        ).to_provenance_dict()
+        for ep_name, url in cell_endpoints.items()
+    }
 
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=len(cells_to_run)) as ex:
         futures = {
-            ex.submit(run_cell, name, flags, ENDPOINTS[ep], task_ids, args.num_runs): name
-            for (name, flags, ep) in cells_to_run
+            ex.submit(run_cell, name, flags, cell_endpoints[ep_name], task_ids, args.num_runs): name
+            for (name, flags, ep_name) in cells_to_run
         }
         all_results = {}
         for fut in as_completed(futures):
@@ -232,6 +276,7 @@ def main() -> None:
         "started_at": datetime.now().isoformat(),
         "total_sec": total,
         "task_ids": task_ids,
+        "resolved_endpoint_specs": resolved_specs,
         "cells": all_results,
     }, indent=2))
     print(f"  Summary: {out_path}")
