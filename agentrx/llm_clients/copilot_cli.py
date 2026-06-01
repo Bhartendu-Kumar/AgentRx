@@ -416,6 +416,11 @@ class LLMAgent:
         end_timestamp = datetime.now()
         execution_time_sec = round(end_time - start_time, 4)
 
+        observed_snapshot.record(
+            served_model=getattr(response, "model", None),
+            system_fingerprint=getattr(response, "system_fingerprint", None),
+        )
+
         usage = response.usage
         prompt_tokens = getattr(usage, "prompt_tokens", 0)
         completion_tokens = getattr(usage, "completion_tokens", 0)

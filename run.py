@@ -43,6 +43,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 import agentrx.pipeline.globals as g
 from agentrx.pipeline.profiles import RunConfig, PAPER_DEFAULT
 from agentrx.pipeline.provenance import build_provenance, dump_provenance
+from agentrx.llm_clients import observed_snapshot
 
 # ---------- Stage definitions ----------
 
@@ -868,6 +869,9 @@ def run_pipeline(input_path: str, args):
                 set(load_state(run_dir).get("completed_stages", []))
             )
             provenance["timestamp_utc_finalized"] = datetime.now(timezone.utc).isoformat()
+            # Snapshot what the LLM server actually served across this run
+            # (None if no calls were made, e.g. --skip-judge --skip-nl-checks).
+            provenance["observed_model_snapshot"] = observed_snapshot.snapshot()
             dump_provenance(run_dir, provenance)
         except Exception as prov_err:
             print(f"  [WARN] failed to finalize run_config.json: {prov_err}")

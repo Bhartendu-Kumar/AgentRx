@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 import agentrx.pipeline.globals as g
 import agentrx.reports.metrics as metrics
+from agentrx.llm_clients import observed_snapshot
 
 from openai import AzureOpenAI
 from azure.identity import (
@@ -57,6 +58,12 @@ class LLMAgent:
         end_time = time.perf_counter()
         end_timestamp = datetime.now()
         execution_time_sec = round(end_time - start_time, 4)
+
+        # Record what the server actually served (D1: drift diagnosability).
+        observed_snapshot.record(
+            served_model=getattr(response, "model", None),
+            system_fingerprint=getattr(response, "system_fingerprint", None),
+        )
 
         # Extract token usage from response
         prompt_tokens = 0

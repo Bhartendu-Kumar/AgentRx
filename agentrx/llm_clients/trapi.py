@@ -7,6 +7,7 @@ from azure.ai.inference import ChatCompletionsClient
 from openai.lib.azure import AzureOpenAI
 from openai import RateLimitError
 import agentrx.pipeline.globals as g
+from agentrx.llm_clients import observed_snapshot
 from azure.identity import (
     ChainedTokenCredential,
     AzureCliCredential,
@@ -44,6 +45,10 @@ class LLMAgent:
                 response = self.llm_client.chat.completions.create(
                     model=self.model_name,
                     messages=messages
+                )
+                observed_snapshot.record(
+                    served_model=getattr(response, "model", None),
+                    system_fingerprint=getattr(response, "system_fingerprint", None),
                 )
                 return response
             except RateLimitError as e:
