@@ -47,6 +47,16 @@ class RunConfig:
         When ``False``, ``nl_check`` violations are filtered out before the
         judge sees the context (reproduces the paper's "Without NL Check Viol."
         appendix table). Default ``True``.
+    skip_nl
+        When ``True``, the invariant checker skips every ``nl_check`` invariant
+        (no LLM call) and emits a ``skipped`` telemetry entry per skipped
+        check. Useful for fast static-only sweeps. Replaces the legacy
+        ``SKIP_NL=1`` env var.
+    python_check_timeout_sec
+        Wall-clock budget for a single LLM-generated ``python_check`` invariant.
+        The checker runs the check on a daemon ``threading.Thread`` and joins
+        with this timeout (cross-platform; SIGALRM was Unix-only). Replaces
+        the legacy ``AGENTRX_PYCHECK_TIMEOUT_SEC`` env var.
     """
     prompt_mode: PromptMode
     exec_mode: ExecMode
@@ -54,6 +64,8 @@ class RunConfig:
     num_runs: int = 1
     prompt_style: PromptStyle = "release"
     include_nl_check_violations: bool = True
+    skip_nl: bool = False
+    python_check_timeout_sec: float = 30.0
 
     def __post_init__(self) -> None:
         if self.num_runs < 1:
@@ -69,6 +81,10 @@ class RunConfig:
         if self.prompt_style not in get_args(PromptStyle):
             raise ValueError(
                 f"prompt_style must be one of {get_args(PromptStyle)}, got {self.prompt_style!r}"
+            )
+        if self.python_check_timeout_sec <= 0:
+            raise ValueError(
+                f"python_check_timeout_sec must be > 0, got {self.python_check_timeout_sec}"
             )
 
 

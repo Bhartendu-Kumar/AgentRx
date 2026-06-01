@@ -22,7 +22,8 @@ Usage (run from agentverify/src/):
     --azure
 
   # Use --azure (default) or --trapi to select the LLM endpoint.
-  # Set SKIP_NL=1 to skip nl_check invariants (no LLM calls, faster).
+  # Use --skip-nl-checks on run.py to skip nl_check invariants (no LLM calls, faster).
+  # Use --python-check-timeout-sec on run.py to override the per-check wall-clock budget.
   # Set DEBUG=0 to suppress debug output.
 
 Outputs per trajectory (written to --out-dir/<task_id>/):
@@ -57,7 +58,38 @@ import agentrx.pipeline.globals as g
 # ------------------------------------------------------------------------------------
 DEBUG = os.getenv("DEBUG", "1") == "1"
 LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
-SKIP_NL = os.getenv("SKIP_NL", "0") == "1"
+
+# ----------------------------------------------------------------------------
+# Runtime knobs set by run.py::run_check from RunConfig; never read from env.
+#
+# We expose these as module-level globals (mutated via set_runtime_config)
+# rather than constructor arguments because AllVerifier is instantiated from
+# many call sites (one per trajectory inside run_check, plus tests). A single
+# centralized setter keeps the contract honest: anyone reading SKIP_NL or
+# PYCHECK_TIMEOUT_SEC must read the RunConfig path, full stop.
+# ----------------------------------------------------------------------------
+SKIP_NL: bool = False
+PYCHECK_TIMEOUT_SEC: float = 30.0
+
+
+def set_runtime_config(
+    skip_nl: bool = False,
+    python_check_timeout_sec: float = 30.0,
+) -> None:
+    """Apply RunConfig-derived knobs to the checker module.
+
+    Called by run.py::run_check before instantiating AllVerifier. Tests may
+    call this directly to fence behaviour without monkey-patching env vars.
+    """
+    global SKIP_NL, PYCHECK_TIMEOUT_SEC
+    if python_check_timeout_sec <= 0:
+        raise ValueError(
+            f"python_check_timeout_sec must be > 0, got {python_check_timeout_sec}"
+        )
+    SKIP_NL = bool(skip_nl)
+    PYCHECK_TIMEOUT_SEC = float(python_check_timeout_sec)
+
+
 def safe_int(x: Any) -> Optional[int]:
     try:
         if x is None:
@@ -83,9 +115,7 @@ DEBUG_ONLY_ASSERTION = os.getenv("DEBUG_ONLY_ASSERTION", "").strip()
 DEBUG_MAX_JSON_CHARS = safe_int(os.getenv("DEBUG_MAX_JSON_CHARS", "4000")) or 4000 
 DEBUG_MAX_TEXT_CHARS = safe_int(os.getenv("DEBUG_MAX_TEXT_CHARS", "600")) or 600
 
-# Hard wall-clock cap for a single LLM-generated python_check (exec + fn call).
-# Prevents infinite loops in generated code from hanging the whole sweep.
-PYCHECK_TIMEOUT_SEC = safe_int(os.getenv("AGENTRX_PYCHECK_TIMEOUT_SEC", "30")) or 30
+# PYCHECK_TIMEOUT_SEC is set above by set_runtime_config() — do not re-read from env.
 
 
 class PyCheckTimeout(Exception):
@@ -856,6 +886,22 @@ class AllVerifier:
         start = time.perf_counter()
 
         assertion_name = invariant.get("assertion_name") or "<missing>"
+
+        if SKIP_NL:
+            end = time.perf_counter()
+            self.telemetry.append(CheckTelemetry(
+                task_id=task_id,
+                step_index=step_pos,
+                assertion_name=assertion_name,
+                check_type="nl_check",
+                check_time_sec=round(end - start, 4),
+                success=True,
+                error=None,
+                check_input={"skipped": True, "reason": "RunConfig.skip_nl=True"},
+                check_output={"verdict": "pass", "note": "skipped nl_check"},
+            ))
+            return None
+
         nl_check = invariant.get("nl_check", {}) or {}
         focus_steps_instruction = nl_check.get("focus_steps_instruction", "") or ""
         judge_scope_notes = nl_check.get("judge_scope_notes", "") or ""
@@ -882,7 +928,7 @@ class AllVerifier:
                 check_time_sec=round(end - start, 4),
                 success=True,
                 error=None,
-                check_input={"skipped": True, "reason": "SKIP_NL=1"},
+                check_input={"skipped": True, "reason": "llm_client unavailable"},
                 check_output={"verdict": "pass", "note": "skipped nl_check"},
             ))
             return None
@@ -1044,7 +1090,7 @@ class AllVerifier:
             if "context_length_exceeded" in str(e):
                 raise RuntimeError(
                     f"NL check prompt too large for the model's context window. "
-                    f"Use a model with a larger context limit or set SKIP_NL=1.\n{e}"
+                    f"Use a model with a larger context limit or pass --skip-nl-checks.\n{e}"
                 )
 
             tb = traceback.format_exc()

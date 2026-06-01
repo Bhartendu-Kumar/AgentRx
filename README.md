@@ -203,12 +203,12 @@ bash scripts/sweeps/run_tau29.sh
 
 ### Operational knobs (not paper axes)
 
-These tune runtime behaviour and are deliberately kept as environment
-variables — they do not affect any reported number:
+These are RunConfig fields surfaced as `run.py` CLI flags. They do not affect any paper-reported number; they tune runtime behaviour. Because they are RunConfig fields (not env vars) they ride along inside `args.judge_config` and any future provenance dump records exactly what each run used.
 
-| Env var | Default | Purpose |
-|---------|---------|---------|
-| `AGENTRX_PYCHECK_TIMEOUT_SEC` | `2.0` | Wall-clock budget for each `python_check` invariant. The checker uses a `threading.Thread`+`join(timeout=...)` pattern (cross-platform — works on Windows, where `signal.SIGALRM` is unavailable). |
+| CLI flag | Default | Purpose |
+|----------|---------|---------|
+| `--python-check-timeout-sec FLOAT` | `30.0` | Wall-clock budget for each `python_check` invariant. The checker uses a `threading.Thread`+`join(timeout=...)` pattern (cross-platform — works on Windows, where `signal.SIGALRM` is unavailable). Replaces the legacy `AGENTRX_PYCHECK_TIMEOUT_SEC` env var. |
+| `--skip-nl-checks` (boolean) | `false` (i.e. run NL checks) | Skip every `nl_check` invariant during the check stage (no LLM call; per-check skipped-telemetry is still emitted). Replaces the legacy `SKIP_NL=1` env var. |
 
 ### What this repo reproduces directly
 

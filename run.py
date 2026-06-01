@@ -295,13 +295,29 @@ def run_dynamic(input_path: str, run_dir: str, domain: str, endpoint: str,
 # ---------- Stage: Check ----------
 
 def run_check(ir_path: str, run_dir: str, domain: str, endpoint: str,
-              static_invariants_path: str, dynamic_invariants_dir: str) -> str:
-    """Check invariants against trajectory. Returns path to results directory."""
-    from agentrx.invariants.checker import AllVerifier
+              static_invariants_path: str, dynamic_invariants_dir: str,
+              config: RunConfig = None) -> str:
+    """Check invariants against trajectory. Returns path to results directory.
+
+    ``config`` supplies the checker-stage knobs (skip_nl, python_check_timeout_sec)
+    via a single RunConfig instance — see agentrx.invariants.checker.set_runtime_config.
+    """
+    from agentrx.invariants.checker import AllVerifier, set_runtime_config
     from agentrx.ir.trajectory_ir import load_trajectories
     from agentrx.invariants.domain_registry import get_domain_config
 
+    if config is None:
+        config = PAPER_DEFAULT
+
     banner("Stage 4/6: Invariant Checking")
+
+    # Apply RunConfig knobs to the checker module once, before constructing any
+    # AllVerifier. This is the single point where env-var-free configuration
+    # enters the checker.
+    set_runtime_config(
+        skip_nl=config.skip_nl,
+        python_check_timeout_sec=config.python_check_timeout_sec,
+    )
 
     results_dir = os.path.join(run_dir, "checker_results")
     ensure_dir(results_dir)
@@ -602,6 +618,20 @@ Examples:
                              "paper-faithful). When >1, writes runs/run{N}.json per iteration and "
                              "emits a mean/std aggregate summary.")
 
+    # --- Checker-stage knobs (override RunConfig fields wired through to AllVerifier) ---
+    nl_check_group = parser.add_mutually_exclusive_group()
+    nl_check_group.add_argument("--skip-nl-checks", dest="skip_nl", action="store_true",
+                                default=None,
+                                help="Skip every nl_check invariant during the check stage "
+                                     "(no LLM call; emits a skipped-telemetry entry per check). "
+                                     "Replaces the legacy SKIP_NL=1 env var.")
+    nl_check_group.add_argument("--run-nl-checks", dest="skip_nl", action="store_false",
+                                help="Run nl_check invariants (default).")
+    parser.add_argument("--python-check-timeout-sec", type=float, default=None,
+                        help=f"Wall-clock budget for a single python_check (default: "
+                             f"{PAPER_DEFAULT.python_check_timeout_sec}s). Replaces the legacy "
+                             "AGENTRX_PYCHECK_TIMEOUT_SEC env var.")
+
     args = parser.parse_args()
 
     # Resolve judge-stage axes into a single immutable RunConfig that flows
@@ -617,6 +647,12 @@ Examples:
             PAPER_DEFAULT.include_nl_check_violations
             if args.include_nl_violations is None
             else args.include_nl_violations
+        ),
+        skip_nl=(PAPER_DEFAULT.skip_nl if args.skip_nl is None else args.skip_nl),
+        python_check_timeout_sec=(
+            PAPER_DEFAULT.python_check_timeout_sec
+            if args.python_check_timeout_sec is None
+            else args.python_check_timeout_sec
         ),
     )
 
@@ -769,7 +805,8 @@ def run_pipeline(input_path: str, args):
         # --- Check ---
         if "check" in stages_to_run:
             dyn_dir = dynamic_inv_dir if os.path.isdir(dynamic_inv_dir) else None
-            checker_dir = run_check(ir_path, run_dir, domain, args.endpoint, static_inv_path, dyn_dir)
+            checker_dir = run_check(ir_path, run_dir, domain, args.endpoint, static_inv_path, dyn_dir,
+                                    config=args.judge_config)
             state["completed_stages"] = list(set(state.get("completed_stages", [])) | {"check"})
             save_state(run_dir, state)
 

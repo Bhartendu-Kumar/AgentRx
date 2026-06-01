@@ -7,22 +7,25 @@ thread with .join(timeout). This test verifies that:
     budget instead of hanging the process.
   - A normal passing/failing check still works.
   - The module no longer imports ``signal``.
+  - PYCHECK_TIMEOUT_SEC is set by RunConfig via set_runtime_config, never
+    read from an env var.
 """
 from __future__ import annotations
 
-import importlib
 import time
 
 import pytest
 
 
 @pytest.fixture
-def checker(monkeypatch):
-    monkeypatch.setenv("AGENTRX_PYCHECK_TIMEOUT_SEC", "2")
+def checker():
     import agentrx.invariants.checker as ck
-    importlib.reload(ck)
-    assert ck.PYCHECK_TIMEOUT_SEC == 2
-    return ck
+    ck.set_runtime_config(skip_nl=False, python_check_timeout_sec=2.0)
+    assert ck.PYCHECK_TIMEOUT_SEC == 2.0
+    assert ck.SKIP_NL is False
+    yield ck
+    # Reset to module defaults so cross-test bleed is impossible.
+    ck.set_runtime_config(skip_nl=False, python_check_timeout_sec=30.0)
 
 
 def _make_verifier(ck):
