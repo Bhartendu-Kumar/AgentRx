@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import agentrx.pipeline.globals as g
 from agentrx.pipeline.profiles import RunConfig
 
 PROVENANCE_FILENAME = "run_config.json"
@@ -85,35 +84,13 @@ def _resolve_model_spec(endpoint: str) -> dict[str, Any]:
     This is the *configured* spec (what we asked for). The *observed* spec
     (what the server actually served) is captured separately by the LLM
     client and merged in later via ``observed_model_snapshot``.
+
+    Implementation is delegated to ``ModelSpec.from_globals(...)``: the
+    typed dataclass is the single source of truth; this function exists to
+    preserve the historical wire format used by ``run_config.json``.
     """
-    if endpoint == "azure":
-        return {
-            "endpoint_type": "azure",
-            "endpoint_url": g.ENDPOINT or None,
-            "api_version": g.API_VERSION or None,
-            "deployment_name": g.DEPLOYMENT or None,
-            "model_name": g.MODEL_NAME or None,
-            "embedding_model_name": g.EMBEDDING_MODEL_NAME or None,
-        }
-    if endpoint == "trapi":
-        return {
-            "endpoint_type": "trapi",
-            "endpoint_url": g.TRAPI_ENDPOINT_PREFIX or None,
-            "api_version": g.TRAPI_API_VERSION or None,
-            "deployment_name": g.TRAPI_DEPLOYMENT_NAME or None,
-            "model_name": g.TRAPI_MODEL_NAME or None,
-            "model_version": g.TRAPI_MODEL_VERSION or None,
-            "trapi_instance": g.TRAPI_INSTANCE or None,
-        }
-    if endpoint == "copilot":
-        return {
-            "endpoint_type": "copilot",
-            "endpoint_url": None,
-            "api_version": None,
-            "deployment_name": None,
-            "model_name": g.MODEL_NAME or None,
-        }
-    return {"endpoint_type": endpoint}
+    from agentrx.llm_clients.model_spec import from_globals
+    return from_globals(endpoint).to_provenance_dict()
 
 
 def _python_version() -> str:
