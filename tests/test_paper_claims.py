@@ -223,3 +223,140 @@ def test_cli_cmd_emits_python_runpy_invocation():
     assert out.startswith("python run.py /tmp/x.json")
     assert "--prompt-mode combined" in out
     assert "--ground-truth" in out
+
+
+# --------------------------------------------------------------------------
+# Table 5 (tab:ablations)
+# --------------------------------------------------------------------------
+
+
+_T5_DOMAIN_DYNAMIC_PAIRS = {
+    ("tau", "oneshot"),
+    ("tau", "stepbystep"),
+    ("flash", "oneshot"),
+    ("flash", "stepbystep"),
+    ("magentic", "oneshot"),
+    ("magentic_star", "stepbystep"),
+}
+
+
+def test_table_5_has_expected_cell_count():
+    # 6 columns x 6 row-bands x 3 metrics = 108
+    t5 = claims_for(table_label="tab:ablations")
+    assert len(t5) == 108, f"expected 108 cells in tab:ablations, got {len(t5)}"
+
+
+def test_table_5_domain_dynamic_pairs_are_exactly_the_paper_six():
+    t5 = claims_for(table_label="tab:ablations")
+    pairs = {(c.domain, c.dynamic_mode) for c in t5}
+    assert pairs == _T5_DOMAIN_DYNAMIC_PAIRS
+
+
+def test_table_5_each_row_band_has_eighteen_cells():
+    # 6 columns x 3 metrics = 18 cells per row band
+    t5 = claims_for(table_label="tab:ablations")
+    from collections import Counter
+    counts = Counter((c.domain, c.dynamic_mode) for c in t5)
+    for pair, n in counts.items():
+        assert n == 18, f"row band {pair} has {n} cells, expected 18"
+
+
+def test_table_5_metric_distribution_is_balanced():
+    t5 = claims_for(table_label="tab:ablations")
+    from collections import Counter
+    counts = Counter(c.metric for c in t5)
+    # 6 row bands x 6 columns = 36 cells per metric
+    assert counts["step_index_acc"] == 36
+    assert counts["category_acc"] == 36
+    assert counts["avg_step_distance"] == 36
+
+
+@pytest.mark.parametrize("col_slug,prompt_mode,exec_mode,with_context", [
+    ("baseline",          "baseline", "violations-after", False),
+    ("stepthencat",       "baseline", "stepbystep",       False),
+    ("baselinevio",       "baseline", "violations-after", True),
+    ("stepthencatvio",    "baseline", "stepbystep",       True),
+    ("taxonomychecklist", "combined", "violations-after", False),
+    ("checklistvio",      "combined", "violations-after", True),
+])
+def test_table_5_column_axis_is_well_defined(col_slug, prompt_mode, exec_mode, with_context):
+    """Every cell in column ``col_slug`` must have the same (prompt_mode,
+    exec_mode, with_context) triple."""
+    t5 = [c for c in claims_for(table_label="tab:ablations")
+          if c.cell_id.endswith(f"_{col_slug}_step")
+          or c.cell_id.endswith(f"_{col_slug}_cat")
+          or c.cell_id.endswith(f"_{col_slug}_dist")]
+    assert len(t5) == 18, f"column {col_slug}: expected 18 cells, got {len(t5)}"
+    for c in t5:
+        assert c.run_config.prompt_mode == prompt_mode, c.cell_id
+        assert c.run_config.exec_mode == exec_mode, c.cell_id
+        assert c.run_config.with_context == with_context, c.cell_id
+
+
+@pytest.mark.parametrize("cell_id,expected_mean,expected_std", [
+    # Sentinel cells. If we ever break the transcription, at least one of
+    # these breaks first.
+    ("t5_tau_oneshot_baseline_step",            32.2, 3.2),
+    ("t5_tau_oneshot_checklistvio_step",        48.3, None),
+    ("t5_tau_oneshot_checklistvio_cat",         39.1, 1.6),
+    ("t5_tau_oneshot_stepthencatvio_step",      54.0, 1.6),  # best step-acc in paper
+    ("t5_flash_stepbystep_checklistvio_cat",    60.3, 1.3),  # best cat-acc in paper
+    ("t5_magentic_oneshot_taxonomychecklist_step", 31.8, None),
+    ("t5_magenticstar_stepbystep_checklistvio_step", 46.9, 3.5),
+])
+def test_table_5_sentinel_values_match_paper(cell_id, expected_mean, expected_std):
+    c = get_claim(cell_id)
+    assert c.paper_value.mean == expected_mean
+    assert c.paper_value.std == expected_std
+
+
+def test_table_5_avg_step_distance_uses_steps_unit():
+    t5 = claims_for(table_label="tab:ablations", metric="avg_step_distance")
+    for c in t5:
+        assert c.paper_value.unit == "steps", c.cell_id
+
+
+def test_table_5_accuracy_metrics_use_percent_unit():
+    t5_step = claims_for(table_label="tab:ablations", metric="step_index_acc")
+    t5_cat = claims_for(table_label="tab:ablations", metric="category_acc")
+    for c in t5_step + t5_cat:
+        assert c.paper_value.unit == "percent", c.cell_id
+
+
+def test_table_5_magentic_star_uses_subset_ids_file():
+    star = [c for c in claims_for(table_label="tab:ablations")
+            if c.domain == "magentic_star"]
+    assert len(star) == 18
+    for c in star:
+        assert c.subset_ids_file() == "data/ground_truth/magentic_star_ids.json"
+
+
+def test_table_5_magentic_full_does_not_use_subset_ids_file():
+    full = [c for c in claims_for(table_label="tab:ablations")
+            if c.domain == "magentic"]
+    assert len(full) == 18
+    for c in full:
+        assert c.subset_ids_file() is None
+
+
+def test_table_4_dynamic_mode_is_oneshot():
+    """The W2b correction: cross-table numeric evidence shows Tab 4 uses
+    one-shot constraint generation, not the CLI default stepbystep."""
+    t4 = claims_for(table_label="tab:static-dynamic")
+    for c in t4:
+        assert c.dynamic_mode == "oneshot", c.cell_id
+
+
+def test_total_catalog_size_is_table_4_plus_table_5():
+    assert len(ALL_CLAIMS) == 8 + 108
+
+
+def test_cli_cmd_for_table_5_threads_dynamic_mode():
+    cp = _run_cli("cmd", "t5_magenticstar_stepbystep_checklistvio_cat",
+                  "--input", "/tmp/x.json")
+    out = cp.stdout.strip()
+    assert "--dynamic-mode stepbystep" in out
+    assert "--prompt-mode combined" in out
+    assert "--exec-mode violations-after" in out
+    # magentic_star -> domain flag is "magentic"
+    assert "--domain magentic" in out
