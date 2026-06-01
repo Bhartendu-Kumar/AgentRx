@@ -6,3 +6,5 @@ papers/
 related_works.md
 partners/
 agentrx.egg-info/
+.pytest_cache/
+.pytest_tmp/
