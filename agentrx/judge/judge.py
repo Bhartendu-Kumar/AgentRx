@@ -50,6 +50,15 @@ USE_GROUND_TRUTH = True
 PROMPT_MODE = "combined"     # "baseline", "checklist", "examples", "combined"
 EXECUTION_MODE = "violations-after" # "violations-after", "stepbystep", "violations-before"
 DOMAIN = None
+# Judge prompt builder selection. "release" = originally-released f-string
+# templates (default; validated on tau-29 n=3: cat 0.425 / step 0.494 vs
+# paper-mirror 0.414 / 0.379). "paper" = paper-mirror concat builder.
+# Set by run.py::run_judge from RunConfig.prompt_style; never read from env.
+PROMPT_STYLE = "release"
+# Whether the judge sees nl_check violations. False reproduces the paper's
+# "Without NL Check Viol." appendix table. Set by run.py::run_judge from
+# RunConfig.include_nl_check_violations; never read from env.
+INCLUDE_NL_VIO = True
 
 # Directory paths (can be overridden via command line)
 EXAMPLES_DIR = None  # Will default to os.path.join(os.path.dirname(__file__), "few_shot_examples")
@@ -59,22 +68,6 @@ VIOLATION_CONTEXT_DIR = None  # Will default to os.path.join(os.path.dirname(__f
 DEBUG = os.getenv("DEBUG", "0") == "1"
 DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "0") == "1"
 DEBUG_SYNTH = os.getenv("DEBUG_SYNTH", "0") == "1"
-
-# Ablation knobs (additive).
-# AGENTRX_NO_NL_VIO=1: drop nl_check violations from judge context (reproduces
-# the paper's "Without NL Check Viol." appendix table; default off).
-# AGENTRX_JUDGE_PROMPT_STYLE selects the system-prompt builder. Default is
-# "release" (originally-released f-string templates; validated on tau-29 n=3:
-# cat 0.425 / step 0.494 vs paper-mirror 0.414 / 0.379). Set to "paper" to
-# reproduce the paper-mirror concat builder exactly.
-NO_NL_VIO = os.getenv("AGENTRX_NO_NL_VIO", "0") == "1"
-JUDGE_PROMPT_STYLE = os.getenv("AGENTRX_JUDGE_PROMPT_STYLE", "release").strip().lower()
-if JUDGE_PROMPT_STYLE not in ("paper", "release"):
-    raise ValueError(f"AGENTRX_JUDGE_PROMPT_STYLE must be 'paper' or 'release', got: {JUDGE_PROMPT_STYLE!r}")
-if NO_NL_VIO:
-    print("[AGENTRX_NO_NL_VIO=1] Dropping nl_check violations from judge context.", flush=True)
-if JUDGE_PROMPT_STYLE == "paper":
-    print("[AGENTRX_JUDGE_PROMPT_STYLE=paper] Using paper-mirror concat judge prompt builder.", flush=True)
 
 def dbg(msg: str) -> None:
     if DEBUG:
@@ -549,7 +542,7 @@ def build_taxonomy_text(mode):
 # ---------------------------------------------------------------------------
 
 # Originally-released f-string templates (kept verbatim from the pre-paper-mirror
-# release of judge.py for the AGENTRX_JUDGE_PROMPT_STYLE=release ablation path).
+# release of judge.py for the PROMPT_STYLE='release' path).
 # Section ordering: GIVEN INPUT / TAXONOMY / ALGORITHM / VIOLATIONS / OUTPUT.
 _REL_TMPL_WITH_CONTEXT = """
 GIVEN INPUT:
@@ -683,8 +676,8 @@ def _get_system_prompt_release(invariants_violation_context=None, is_failure_pro
     """Originally-released prompt builder (pre-paper-mirror).
 
     Section order: GIVEN-INPUT / TAXONOMY / ALGORITHM / VIOLATIONS / OUTPUT.
-    Activated when AGENTRX_JUDGE_PROMPT_STYLE=release. Used for the
-    paper-mirror-vs-release ablation only.
+    Activated when PROMPT_STYLE == 'release' (the default; set from
+    RunConfig.prompt_style by run.py::run_judge).
     """
     taxonomy_block = build_taxonomy_text(PROMPT_MODE)
     inv = invariants_violation_context or ""
@@ -701,7 +694,7 @@ def _get_system_prompt_release(invariants_violation_context=None, is_failure_pro
 
 
 def get_system_prompt(invariants_violation_context=None, is_failure_prompt=False):
-    if JUDGE_PROMPT_STYLE == "release":
+    if PROMPT_STYLE == "release":
         return _get_system_prompt_release(invariants_violation_context, is_failure_prompt)
     taxonomy_section = build_taxonomy_text(PROMPT_MODE)
 
@@ -1127,10 +1120,10 @@ def load_invariant_violation_context(task_id):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             context_data = json.load(f)
-            if NO_NL_VIO and isinstance(context_data, list):
+            if not INCLUDE_NL_VIO and isinstance(context_data, list):
                 before = len(context_data)
                 context_data = [v for v in context_data if not (isinstance(v, dict) and v.get("check_type") == "nl_check")]
-                print(f"[CONTEXT] [FILTER] AGENTRX_NO_NL_VIO=1: dropped {before - len(context_data)} nl_check violations (kept {len(context_data)})")
+                print(f"[CONTEXT] [FILTER] include_nl_check_violations=False: dropped {before - len(context_data)} nl_check violations (kept {len(context_data)})")
             print(f"[CONTEXT] [OK] Loaded violation context for task {task_id}: {file_path}")
             return context_data
     except FileNotFoundError:

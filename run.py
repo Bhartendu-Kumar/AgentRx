@@ -398,6 +398,8 @@ def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
     judge_module.ENDPOINT_USED = endpoint
     judge_module.PROMPT_MODE = config.prompt_mode
     judge_module.EXECUTION_MODE = config.exec_mode
+    judge_module.PROMPT_STYLE = config.prompt_style
+    judge_module.INCLUDE_NL_VIO = config.include_nl_check_violations
     # with_context can only be honoured when the check stage produced a context
     # directory; if it didn't, the profile's request collapses to False.
     judge_module.RUN_WITH_CONTEXT = config.with_context and violation_context_dir is not None
@@ -415,6 +417,8 @@ def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
     print(f"  [DEBUG][run_judge] ground_truth_file:     {ground_truth_file}")
     print(f"  [DEBUG][run_judge] PROMPT_MODE:           {judge_module.PROMPT_MODE}")
     print(f"  [DEBUG][run_judge] EXECUTION_MODE:        {judge_module.EXECUTION_MODE}")
+    print(f"  [DEBUG][run_judge] PROMPT_STYLE:          {judge_module.PROMPT_STYLE}")
+    print(f"  [DEBUG][run_judge] INCLUDE_NL_VIO:        {judge_module.INCLUDE_NL_VIO}")
     print(f"  [DEBUG][run_judge] RUN_WITH_CONTEXT:      {judge_module.RUN_WITH_CONTEXT}")
     print(f"  [DEBUG][run_judge] USE_GROUND_TRUTH:      {judge_module.USE_GROUND_TRUTH}")
     print(f"  [DEBUG][run_judge] NUM_RUNS:              {config.num_runs}")
@@ -575,9 +579,24 @@ Examples:
     parser.add_argument("--exec-mode", default=PAPER_DEFAULT.exec_mode,
                         choices=["violations-after", "stepbystep", "violations-before"],
                         help=f"Judge execution mode (default: {PAPER_DEFAULT.exec_mode}, paper-faithful)")
+    parser.add_argument("--prompt-style", default=PAPER_DEFAULT.prompt_style,
+                        choices=["paper", "release"],
+                        help=f"Judge system-prompt builder (default: {PAPER_DEFAULT.prompt_style!r}). "
+                             "'release' is the originally-released f-string templates and dominates the "
+                             "paper-mirror style on the tau-29 ablation. 'paper' reproduces the paper-mirror "
+                             "concat builder verbatim.")
     parser.add_argument("--no-context", action="store_true",
                         help="Do not inject deduplicated violation context into the judge prompt "
                              "(paper-faithful default injects context when the check stage produced it)")
+    nl_group = parser.add_mutually_exclusive_group()
+    nl_group.add_argument("--include-nl-violations", dest="include_nl_violations",
+                          action="store_true", default=None,
+                          help=f"Include nl_check violations in the judge context (default: "
+                               f"{PAPER_DEFAULT.include_nl_check_violations}, paper-faithful)")
+    nl_group.add_argument("--exclude-nl-violations", dest="include_nl_violations",
+                          action="store_false",
+                          help="Drop nl_check violations from the judge context "
+                               "(reproduces the paper's 'Without NL Check Viol.' appendix table)")
     parser.add_argument("--num-runs", type=int, default=PAPER_DEFAULT.num_runs,
                         help=f"Number of independent judge iterations (default: {PAPER_DEFAULT.num_runs}, "
                              "paper-faithful). When >1, writes runs/run{N}.json per iteration and "
@@ -593,6 +612,12 @@ Examples:
         exec_mode=args.exec_mode,
         with_context=PAPER_DEFAULT.with_context and not args.no_context,
         num_runs=args.num_runs,
+        prompt_style=args.prompt_style,
+        include_nl_check_violations=(
+            PAPER_DEFAULT.include_nl_check_violations
+            if args.include_nl_violations is None
+            else args.include_nl_violations
+        ),
     )
 
     input_path = os.path.abspath(args.input)
