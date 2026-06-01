@@ -190,7 +190,8 @@ The end-to-end paper sweeps and aggregators live under the top-level
 | `python -m scripts.score_flash` | Aggregates Flash-domain runs (requires the internal Flash dataset). |
 | `bash scripts/sweeps/run_tau29.sh` | One-shot driver for the 29-trajectory τ subset shipped under `data/tau_dataset/`. |
 | `bash scripts/sweeps/run_flash42.sh` | One-shot driver for the 42-trajectory Flash subset (internal only). |
-| `bash scripts/sweeps/run_magentic27.sh` | One-shot driver for the 27-trajectory `magentic*` subset. |
+| `bash scripts/sweeps/run_magentic44.sh` | One-shot driver for the full 44-trajectory `magentic` set (ids drawn from `agentrx.pipeline.globals.MAGENTIC_TASK_IDS`). Feeds the `Magentic / One-Shot Constraint Generation` row band of `tab:ablations`. |
+| `bash scripts/sweeps/run_magentic27.sh` | One-shot driver for the 27-trajectory `magentic*` subset (ids from `data/ground_truth/magentic_star_ids.json`). Feeds the `Magentic* / Step-by-Step Constraint Generation` row band of `tab:ablations`. |
 
 The shell drivers resolve the repo root from their own location and honour
 two overrides for non-default Python environments and log destinations:
