@@ -22,3 +22,12 @@ include = ["agentrx*"]
 
 [tool.setuptools.package-data]
 agentrx = ["**/*.json", "**/*.txt"]
+
+[tool.pytest.ini_options]
+# Single source of truth for the test layout: `pytest` invoked from the
+# repo root (no arguments) discovers exactly the suite that CI runs.
+testpaths = ["tests"]
+# Ignore stray pyc/cached bytecode in untracked dirs (runs/, trajectories/)
+# so test collection is reproducible across machines.
+norecursedirs = ["runs", "trajectories", "data", "third_party", "scripts/__pycache__"]
+addopts = "-ra"
