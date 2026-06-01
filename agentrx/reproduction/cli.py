@@ -107,6 +107,9 @@ def claim_to_cmdline(c: PaperClaim, *, input_path: str, run_name: str | None = N
     if c.skip_dynamic:
         argv.append("--skip-dynamic")
     argv += ["--ground-truth", c.ground_truth_path()]
+    subset = c.subset_ids_file()
+    if subset is not None:
+        argv += ["--subset-ids", subset]
     if run_name:
         argv += ["--run-name", run_name]
     return argv

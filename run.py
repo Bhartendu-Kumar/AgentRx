@@ -81,6 +81,45 @@ def _is_degenerate_ir(data: list, input_path: str) -> bool:
     return False
 
 
+def _load_subset_ids(path: str):
+    """Load a subset-id allowlist from a JSON file.
+
+    Accepts two shipped shapes (see data/ground_truth/magentic_star_ids.json):
+      1. ``{"ids": [{"trajectory_id": str, ...}, ...]}`` -- pull ``trajectory_id``
+      2. ``[str, ...]`` -- bare list of ids
+
+    Returns a ``set[str]`` of trajectory ids. Raises ``ValueError`` on an
+    unrecognised shape so the user gets a clear failure at CLI parse time
+    instead of a silent no-op downstream.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "ids" in data:
+        out = set()
+        for entry in data["ids"]:
+            if isinstance(entry, str):
+                out.add(entry)
+            elif isinstance(entry, dict) and "trajectory_id" in entry:
+                out.add(str(entry["trajectory_id"]))
+            else:
+                raise ValueError(
+                    f"subset-ids file {path!r}: each entry in 'ids' must be a string "
+                    f"or an object with a 'trajectory_id' key (got {entry!r})"
+                )
+        if not out:
+            raise ValueError(f"subset-ids file {path!r}: 'ids' list is empty")
+        return out
+    if isinstance(data, list):
+        out = {str(x) for x in data}
+        if not out:
+            raise ValueError(f"subset-ids file {path!r}: top-level list is empty")
+        return out
+    raise ValueError(
+        f"subset-ids file {path!r}: expected either a list of ids or an object "
+        f"with an 'ids' key (got top-level type {type(data).__name__})"
+    )
+
+
 def load_state(run_dir: str) -> dict:
     state_path = os.path.join(run_dir, "state.json")
     if os.path.exists(state_path):
@@ -131,8 +170,15 @@ def validate_endpoint_config(endpoint: str):
 
 # ---------- Stage: IR ----------
 
-def run_ir(input_path: str, run_dir: str, domain: str, endpoint: str, state: dict) -> str:
-    """Normalize trajectory to IR format. Returns path to IR output."""
+def run_ir(input_path: str, run_dir: str, domain: str, endpoint: str, state: dict,
+           subset_ids=None) -> str:
+    """Normalize trajectory to IR format. Returns path to IR output.
+
+    ``subset_ids``: optional ``set[str]`` of trajectory ids. When set, the IR
+    output is filtered to only the trajectories whose ``trajectory_id`` is in
+    the set. This is the canonical filtering point for paper-subset cells
+    (e.g. Magentic*'s 27-id slice of the 44 Magentic trajectories).
+    """
     from agentrx.ir.trajectory_ir import load_trajectories, validate_ir, markdown_ir
     from agentrx.invariants.domain_registry import get_domain_config
 
@@ -170,6 +216,15 @@ def run_ir(input_path: str, run_dir: str, domain: str, endpoint: str, state: dic
     state["ir_from_markdown"] = is_markdown
     if used_llm_fallback:
         print("  [INFO] Unknown format detected — domain-specific tools will NOT be used")
+
+    # Apply subset filter at the IR boundary. This is the canonical place to
+    # filter because (a) it happens before any LLM-driven stage spends tokens,
+    # and (b) trajectory_id is the natural key in the IR schema.
+    if subset_ids:
+        before = len(data)
+        data = [t for t in data if str(t.get("trajectory_id")) in subset_ids]
+        print(f"  [INFO] Subset filter: {before} -> {len(data)} trajectory(ies) "
+              f"({len(subset_ids)} ids in allowlist)")
 
     # Validate each trajectory
     valid_count = 0
@@ -589,6 +644,14 @@ Examples:
                         help="Custom name for this run (default: auto-generated)")
     parser.add_argument("--run-dir", default=None,
                         help="Resume into an existing run directory")
+    parser.add_argument("--subset-ids", default=None,
+                        help="Path to a JSON file listing trajectory ids to keep. Supported "
+                             "shapes: {'ids': [{'trajectory_id': str, ...}, ...]} (as shipped "
+                             "in data/ground_truth/magentic_star_ids.json) or a bare list of "
+                             "strings. Filenames matching no listed id are skipped when the "
+                             "input is a directory; multi-trajectory files are filtered at the "
+                             "IR stage. Required to reproduce the Magentic* paper rows from "
+                             "the full 44-trajectory Magentic dataset.")
 
     # --- Judge-stage knobs (override individual axes of agentrx.pipeline.profiles.PAPER_DEFAULT) ---
     parser.add_argument("--prompt-mode", default=PAPER_DEFAULT.prompt_mode,
@@ -636,6 +699,16 @@ Examples:
 
     args = parser.parse_args()
 
+    # Resolve the subset-id allowlist once (before any pipeline work) so a
+    # bad path / malformed file fails fast at CLI parse time.
+    args.subset_ids_path = args.subset_ids  # preserved for provenance
+    args.subset_ids = (
+        _load_subset_ids(args.subset_ids) if args.subset_ids else None
+    )
+    if args.subset_ids is not None:
+        print(f"[INFO] Loaded {len(args.subset_ids)} subset id(s) from "
+              f"{args.subset_ids_path}")
+
     # Resolve judge-stage axes into a single immutable RunConfig that flows
     # through run_pipeline -> run_judge. Anything not overridden inherits from
     # PAPER_DEFAULT, so an unflagged invocation produces the paper recipe.
@@ -672,6 +745,23 @@ Examples:
         if not trajectory_files:
             print(f"Error: No .json or .jsonl files found in {input_path}")
             sys.exit(1)
+
+        # File-level subset filter: per-trajectory datasets (Magentic, Flash)
+        # name files by trajectory id, so the filename stem is the natural
+        # filter key. Files outside the allowlist are skipped entirely (no
+        # IR, no LLM calls). Single-file multi-trajectory inputs (tau) take
+        # the else branch and get filtered inside run_ir.
+        if args.subset_ids is not None:
+            before = len(trajectory_files)
+            trajectory_files = [
+                p for p in trajectory_files if p.stem in args.subset_ids
+            ]
+            print(f"[INFO] Subset filter: {before} -> {len(trajectory_files)} "
+                  f"file(s) ({len(args.subset_ids)} ids in allowlist)")
+            if not trajectory_files:
+                print("Error: subset-ids filter matched zero files in input "
+                      "directory; verify ids and dataset paths.")
+                sys.exit(1)
 
         print(f"Found {len(trajectory_files)} trajectory file(s) in {input_path}:\n")
         for i, f in enumerate(trajectory_files, 1):
@@ -770,6 +860,14 @@ def run_pipeline(input_path: str, args):
         judge_config=args.judge_config,
         stages_planned=list(stages_to_run),
         stages_completed=sorted(set(state.get("completed_stages", []))),
+        extra={
+            "subset_ids_file": getattr(args, "subset_ids_path", None),
+            "subset_ids_count": (
+                len(args.subset_ids)
+                if getattr(args, "subset_ids", None) is not None
+                else None
+            ),
+        },
     )
     dump_provenance(run_dir, provenance)
 
@@ -785,12 +883,14 @@ def run_pipeline(input_path: str, args):
     try:
         # --- IR ---
         if "ir" in stages_to_run:
-            ir_path = run_ir(input_path, run_dir, domain, args.endpoint, state)
+            ir_path = run_ir(input_path, run_dir, domain, args.endpoint, state,
+                             subset_ids=getattr(args, "subset_ids", None))
             state["completed_stages"] = list(set(state.get("completed_stages", [])) | {"ir"})
             save_state(run_dir, state)
         elif not os.path.exists(ir_path):
             print("[INFO] Running IR stage (required by later stages)")
-            ir_path = run_ir(input_path, run_dir, domain, args.endpoint, state)
+            ir_path = run_ir(input_path, run_dir, domain, args.endpoint, state,
+                             subset_ids=getattr(args, "subset_ids", None))
             state["completed_stages"] = list(set(state.get("completed_stages", [])) | {"ir"})
             save_state(run_dir, state)
 
