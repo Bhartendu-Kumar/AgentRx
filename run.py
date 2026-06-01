@@ -27,7 +27,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Force UTF-8 stdout/stderr on Windows so emoji/unicode prints don't crash
@@ -42,6 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 import agentrx.pipeline.globals as g
 from agentrx.pipeline.profiles import RunConfig, PAPER_DEFAULT
+from agentrx.pipeline.provenance import build_provenance, dump_provenance
 
 # ---------- Stage definitions ----------
 
@@ -756,6 +757,21 @@ def run_pipeline(input_path: str, args):
         print(f"Previously completed: {', '.join(completed)}")
     print()
 
+    # --- Provenance dump (deficit D1: single source of truth for what was run) ---
+    # Written BEFORE any stage executes so even a crashed run leaves enough
+    # information behind to bisect (input hash, exact RunConfig, model spec).
+    # Re-written at pipeline end with stages_completed filled in.
+    provenance = build_provenance(
+        input_path=input_path,
+        domain=domain,
+        endpoint=args.endpoint,
+        ground_truth_path=args.ground_truth,
+        judge_config=args.judge_config,
+        stages_planned=list(stages_to_run),
+        stages_completed=sorted(set(state.get("completed_stages", []))),
+    )
+    dump_provenance(run_dir, provenance)
+
     pipeline_start = time.perf_counter()
 
     # Paths that get filled in as stages complete (or loaded from prior runs)
@@ -830,7 +846,6 @@ def run_pipeline(input_path: str, args):
                 save_state(run_dir, state)
             else:
                 print("  [SKIP] No judge output to report on")
-
     except KeyboardInterrupt:
         print("\n\n[INTERRUPTED] Progress saved. Resume with:")
         not_done = [s for s in stages_to_run if s not in state.get("completed_stages", [])]
@@ -844,6 +859,18 @@ def run_pipeline(input_path: str, args):
             print(f"\nResume with:")
             print(f"  python run.py {input_path} --run-dir {run_dir} --from-stage {not_done[0]}")
         raise
+    finally:
+        # Always refresh provenance with whatever stages actually completed,
+        # even on exception. This is what makes provenance trustworthy for
+        # post-mortems on crashed runs.
+        try:
+            provenance["stages_completed"] = sorted(
+                set(load_state(run_dir).get("completed_stages", []))
+            )
+            provenance["timestamp_utc_finalized"] = datetime.now(timezone.utc).isoformat()
+            dump_provenance(run_dir, provenance)
+        except Exception as prov_err:
+            print(f"  [WARN] failed to finalize run_config.json: {prov_err}")
 
     elapsed = time.perf_counter() - pipeline_start
 
