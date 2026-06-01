@@ -144,11 +144,71 @@ flags compose orthogonally; omitted flags inherit from `PAPER_DEFAULT`.
 | `--dynamic-mode` | `stepbystep` \| `oneshot` | Table 3 (one-shot dynamic invariants) |
 | `--skip-static` | (flag) | Dynamic-only ablation |
 | `--skip-dynamic` | (flag) | Global/static-only ablation |
+| `--prompt-style` | `release` \| `paper` | Selects which judge system-prompt builder is used. `release` is the default shipped here; `paper` mirrors the verbatim taxonomy + section ordering of the camera-ready prompt and is what the paper's table rows were produced with. |
+| `--include-nl-violations` / `--exclude-nl-violations` | (mutually exclusive flags) | Controls whether `nl_check` violations are forwarded into the judge context. `include` is the release default; `exclude` produces the "without NL-check violations" ablation row. |
 
 When `--num-runs > 1`, the wrapper invokes
 `agentrx.judge.judge.create_aggregate_summary` after the loop, which writes
 the mean/std/CV table the paper reports under
 `judge_output/aggregate_summary.json`.
+
+### Reproducibility matrix (paper vs. release)
+
+Two prompt-style profiles are encoded in `agentrx.pipeline.profiles`:
+
+| Profile | `prompt_style` | `include_nl_check_violations` | Use this when... |
+|---------|----------------|-------------------------------|------------------|
+| `PAPER_DEFAULT` | `release` | `True` | You want the shipped release defaults (production behaviour). |
+| `PAPER_MIRROR_DEFAULT` | `paper` | `True` | You want to reproduce the verbatim paper judge prompt for table comparisons. |
+
+Recipe table for the headline rows:
+
+| Goal | Command |
+|------|---------|
+| Release default (this repo) | `python run.py trajectory.json` |
+| Paper Tables 4 (best cell) — paper prompt | `python run.py trajectory.json --prompt-style paper` |
+| Paper "without NL-check violations" ablation | `python run.py trajectory.json --prompt-style paper --exclude-nl-violations` |
+| Release sanity — no violation context at all | `python run.py trajectory.json --no-context` |
+
+`--prompt-style` and `--include/--exclude-nl-violations` compose orthogonally
+with the other ablation flags above. Both knobs are first-class fields on
+`RunConfig` (`agentrx/pipeline/profiles.py`) and are validated at construction
+time via `Literal[...]` membership; passing an invalid value raises before any
+LLM call is issued. There are **no environment variables** that silently
+toggle judge behaviour — every paper axis is a CLI flag, recorded into
+`run_config.json` for every run.
+
+### Reproduction driver scripts
+
+The end-to-end paper sweeps and aggregators live under the top-level
+[scripts/](scripts/) package so they stay versioned and importable:
+
+| Script | Purpose |
+|--------|---------|
+| `python -m scripts.run_tau_ablation` | Runs the τ-bench paper ablation cells (every `prompt_mode` × `exec_mode` × `prompt_style`) and stores per-cell `runs/` outputs. |
+| `python -m scripts.score_tau_ablation` | Aggregates per-run JSON across the τ ablation cells into a single side-by-side table. |
+| `python -m scripts.score_flash` | Aggregates Flash-domain runs (requires the internal Flash dataset). |
+| `bash scripts/sweeps/run_tau29.sh` | One-shot driver for the 29-trajectory τ subset shipped under `data/tau_dataset/`. |
+| `bash scripts/sweeps/run_flash42.sh` | One-shot driver for the 42-trajectory Flash subset (internal only). |
+| `bash scripts/sweeps/run_magentic27.sh` | One-shot driver for the 27-trajectory `magentic*` subset. |
+
+The shell drivers resolve the repo root from their own location and honour
+two overrides for non-default Python environments and log destinations:
+
+```bash
+AGENTRX_PYTHON=/path/to/venv/bin/python \
+AGENTRX_LOG=/tmp/tau29.log \
+bash scripts/sweeps/run_tau29.sh
+```
+
+### Operational knobs (not paper axes)
+
+These tune runtime behaviour and are deliberately kept as environment
+variables — they do not affect any reported number:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `AGENTRX_PYCHECK_TIMEOUT_SEC` | `2.0` | Wall-clock budget for each `python_check` invariant. The checker uses a `threading.Thread`+`join(timeout=...)` pattern (cross-platform — works on Windows, where `signal.SIGALRM` is unavailable). |
 
 ### What this repo reproduces directly
 
