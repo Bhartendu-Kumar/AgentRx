@@ -14,6 +14,7 @@ import dataclasses
 import json
 import shlex
 import sys
+from pathlib import Path
 from typing import Sequence
 
 from agentrx.reproduction.paper_claims import (
@@ -225,6 +226,95 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_audit(args: argparse.Namespace) -> int:
+    """Walk a directory of judge summaries and check project_metric on every one.
+
+    Diagnoses schema drift between what the judge writes and what the
+    aggregator reads. Distinct from `report`: `report` projects the
+    catalog's metrics onto a planned sweep; `audit` runs every supported
+    metric against every summary it finds, regardless of catalog.
+
+    Exit code:
+        0  no summary raised an unexpected exception
+        1  at least one UNEXPECTED exception, OR a value was out of bounds
+           (percent outside [0,100], negative std, negative distance)
+        2  no summaries found at all (likely a wrong --runs-root)
+    """
+    from agentrx.reproduction.aggregator import MetricMissing, project_metric
+
+    METRICS = [
+        "step_index_acc", "category_acc", "avg_step_distance",
+        "step_acc_at_plus_minus_1", "step_acc_at_plus_minus_3",
+        "step_acc_at_plus_minus_5",
+    ]
+    root = Path(args.runs_root)
+    if not root.is_dir():
+        print(f"error: --runs-root {root} is not a directory", file=sys.stderr)
+        return 2
+
+    files: list[Path] = []
+    for p in root.rglob("summary.json"):
+        if "judge_output/analysis" in str(p):
+            files.append(p)
+    if not files:
+        print(f"error: no judge_output/analysis/summary.json files under {root}",
+              file=sys.stderr)
+        return 2
+
+    n_ok = 0
+    n_metric_missing = 0
+    n_unexpected = 0
+    n_out_of_bounds = 0
+    corrupt: list[tuple[Path, str]] = []
+    failures: list[tuple[Path, str, str]] = []
+
+    for p in files:
+        try:
+            d = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            corrupt.append((p, repr(e)))
+            continue
+        for m in METRICS:
+            try:
+                mean, std, _ = project_metric(m, d)
+            except MetricMissing:
+                n_metric_missing += 1
+                continue
+            except Exception as e:  # noqa: BLE001 - audit MUST catch everything
+                n_unexpected += 1
+                failures.append((p, m, f"{type(e).__name__}: {e}"))
+                continue
+            ok = True
+            if m == "avg_step_distance":
+                if mean < 0:
+                    failures.append((p, m, f"negative distance {mean}"))
+                    ok = False
+            else:
+                if not (0.0 <= mean <= 100.0):
+                    failures.append((p, m, f"percent out of [0,100]: {mean}"))
+                    ok = False
+            if std < 0:
+                failures.append((p, m, f"negative std {std}"))
+                ok = False
+            if not ok:
+                n_out_of_bounds += 1
+            else:
+                n_ok += 1
+
+    print(f"# Audit: {len(files)} summary.json file(s) under {root}")
+    print(f"  corrupt JSON:        {len(corrupt)}")
+    print(f"  metric+file pairs OK:           {n_ok}")
+    print(f"  MetricMissing (expected misses):{n_metric_missing}")
+    print(f"  UNEXPECTED exceptions:          {n_unexpected}")
+    print(f"  out-of-bounds values:           {n_out_of_bounds}")
+    if args.verbose:
+        for p, m, msg in failures[:20]:
+            print(f"  FAIL  {p}  [{m}]  {msg}")
+        for p, msg in corrupt[:5]:
+            print(f"  CORRUPT  {p}  {msg}")
+    return 1 if (n_unexpected or n_out_of_bounds or corrupt) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="agentrx.reproduction",
@@ -294,6 +384,18 @@ def build_parser() -> argparse.ArgumentParser:
                           help="summary: human counts; json: full structured "
                                "reports; markdown: one table row per cell.")
     p_report.set_defaults(func=_cmd_report)
+
+    p_audit = sub.add_parser(
+        "audit",
+        help="Walk a runs-root and project every supported metric against "
+             "every judge summary.json; report schema drift / bad values.",
+    )
+    p_audit.add_argument("--runs-root", required=True,
+                         help="Directory to walk recursively for "
+                              "judge_output/analysis/summary.json files.")
+    p_audit.add_argument("--verbose", action="store_true",
+                         help="Also list the first 20 failures.")
+    p_audit.set_defaults(func=_cmd_audit)
 
     return p
 

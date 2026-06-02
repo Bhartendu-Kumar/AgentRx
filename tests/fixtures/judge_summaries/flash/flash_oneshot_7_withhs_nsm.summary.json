@@ -1,0 +1,276 @@
+{
+    "num_runs": 3,
+    "individual_run_summaries": [
+        {
+            "model_name": "gpt-5",
+            "api_version": "2025-01-01-preview",
+            "Correct cases": 1,
+            "Incorrect cases": 0,
+            "Average distance for correct cases": 0.0,
+            "Average distance for incorrect cases": 0,
+            "Overall average distance": 0.0,
+            "Normalized average distance for correct cases": 0.0,
+            "Normalized average distance for incorrect cases": 0,
+            "Normalized overall average distance": 0.0,
+            "Correct step number predictions": 1,
+            "Incorrect step number predictions": 0,
+            "Step number accuracy": 1.0,
+            "Step accuracy within +-1": 1.0,
+            "Step accuracy within +-2": 1.0,
+            "Step accuracy within +-3": 1.0,
+            "Step accuracy within +-4": 1.0,
+            "Step accuracy within +-5": 1.0,
+            "total_prompt_tokens": 20818,
+            "total_output_tokens": 1947,
+            "total_tokens": 22765,
+            "total_execution_time_sec": 24.3822
+        },
+        {
+            "model_name": "gpt-5",
+            "api_version": "2025-01-01-preview",
+            "Correct cases": 1,
+            "Incorrect cases": 0,
+            "Average distance for correct cases": 0.0,
+            "Average distance for incorrect cases": 0,
+            "Overall average distance": 0.0,
+            "Normalized average distance for correct cases": 0.0,
+            "Normalized average distance for incorrect cases": 0,
+            "Normalized overall average distance": 0.0,
+            "Correct step number predictions": 1,
+            "Incorrect step number predictions": 0,
+            "Step number accuracy": 1.0,
+            "Step accuracy within +-1": 1.0,
+            "Step accuracy within +-2": 1.0,
+            "Step accuracy within +-3": 1.0,
+            "Step accuracy within +-4": 1.0,
+            "Step accuracy within +-5": 1.0,
+            "total_prompt_tokens": 20818,
+            "total_output_tokens": 1619,
+            "total_tokens": 22437,
+            "total_execution_time_sec": 22.0194
+        },
+        {
+            "model_name": "gpt-5",
+            "api_version": "2025-01-01-preview",
+            "Correct cases": 1,
+            "Incorrect cases": 0,
+            "Average distance for correct cases": 0.0,
+            "Average distance for incorrect cases": 0,
+            "Overall average distance": 0.0,
+            "Normalized average distance for correct cases": 0.0,
+            "Normalized average distance for incorrect cases": 0,
+            "Normalized overall average distance": 0.0,
+            "Correct step number predictions": 1,
+            "Incorrect step number predictions": 0,
+            "Step number accuracy": 1.0,
+            "Step accuracy within +-1": 1.0,
+            "Step accuracy within +-2": 1.0,
+            "Step accuracy within +-3": 1.0,
+            "Step accuracy within +-4": 1.0,
+            "Step accuracy within +-5": 1.0,
+            "total_prompt_tokens": 20818,
+            "total_output_tokens": 1918,
+            "total_tokens": 22736,
+            "total_execution_time_sec": 28.7658
+        }
+    ],
+    "aggregate_statistics": {
+        "overall_correct_cases": 3,
+        "overall_incorrect_cases": 0,
+        "overall_total_cases": 3,
+        "overall_accuracy": 1.0,
+        "overall_avg_distance_for_correct_cases": 0.0,
+        "overall_avg_distance_for_incorrect_cases": 0,
+        "overall_avg_distance": 0.0,
+        "overall_normalized_avg_distance_for_correct_cases": 0.0,
+        "overall_normalized_avg_distance_for_incorrect_cases": 0,
+        "overall_normalized_avg_distance": 0.0,
+        "overall_correct_step_number_predictions": 3,
+        "overall_incorrect_step_number_predictions": 0,
+        "overall_step_number_accuracy": 1.0,
+        "overall_step_accuracy_within_+-1": 1.0,
+        "overall_step_accuracy_within_+-2": 1.0,
+        "overall_step_accuracy_within_+-3": 1.0,
+        "overall_step_accuracy_within_+-4": 1.0,
+        "overall_step_accuracy_within_+-5": 1.0,
+        "grand_total_prompt_tokens": 62454,
+        "grand_total_output_tokens": 5484,
+        "grand_total_tokens": 67938,
+        "grand_total_execution_time_sec": 75.1674,
+        "avg_prompt_tokens_per_run": 20818.0,
+        "avg_output_tokens_per_run": 1828.0,
+        "avg_tokens_per_run": 22646.0,
+        "avg_execution_time_per_run_sec": 25.0558
+    },
+    "stability_metrics": {
+        "accuracy": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0,
+            "coefficient_of_variation": 0.0
+        },
+        "correct_cases": {
+            "mean": 1,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 1,
+            "max": 1,
+            "range": 0
+        },
+        "incorrect_cases": {
+            "mean": 0,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 0,
+            "max": 0,
+            "range": 0
+        },
+        "avg_distance_for_correct_cases": {
+            "mean": 0.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "range": 0.0
+        },
+        "avg_distance_for_incorrect_cases": {
+            "mean": 0,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 0,
+            "max": 0,
+            "range": 0
+        },
+        "overall_avg_distance": {
+            "mean": 0.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "range": 0.0
+        },
+        "normalized_avg_distance_for_correct_cases": {
+            "mean": 0.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "range": 0.0
+        },
+        "normalized_avg_distance_for_incorrect_cases": {
+            "mean": 0,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 0,
+            "max": 0,
+            "range": 0
+        },
+        "normalized_overall_avg_distance": {
+            "mean": 0.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "range": 0.0
+        },
+        "correct_step_number_predictions": {
+            "mean": 1,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 1,
+            "max": 1,
+            "range": 0
+        },
+        "incorrect_step_number_predictions": {
+            "mean": 0,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 0,
+            "max": 0,
+            "range": 0
+        },
+        "step_number_accuracy": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0
+        },
+        "step_accuracy_within_+-1": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0
+        },
+        "step_accuracy_within_+-2": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0
+        },
+        "step_accuracy_within_+-3": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0
+        },
+        "step_accuracy_within_+-4": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0
+        },
+        "step_accuracy_within_+-5": {
+            "mean": 1.0,
+            "std_dev": 0.0,
+            "variance": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "range": 0.0
+        },
+        "total_prompt_tokens": {
+            "mean": 20818,
+            "std_dev": 0.0,
+            "variance": 0,
+            "min": 20818,
+            "max": 20818,
+            "range": 0
+        },
+        "total_output_tokens": {
+            "mean": 1828,
+            "std_dev": 181.5791838289841,
+            "variance": 32971,
+            "min": 1619,
+            "max": 1947,
+            "range": 328
+        },
+        "total_tokens": {
+            "mean": 22646,
+            "std_dev": 181.5791838289841,
+            "variance": 32971,
+            "min": 22437,
+            "max": 22765,
+            "range": 328
+        },
+        "total_execution_time_sec": {
+            "mean": 25.0558,
+            "std_dev": 3.4232705064017352,
+            "variance": 11.718780959999991,
+            "min": 22.0194,
+            "max": 28.7658,
+            "range": 6.746399999999998
+        }
+    }
+}
