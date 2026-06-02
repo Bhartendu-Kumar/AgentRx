@@ -38,11 +38,21 @@ Design (first principles)
    CellReport. Model homogeneity within an invocation is checked: if
    different runs of the same cell used different model_names, that is
    recorded explicitly rather than silently averaged.
+
+6. *Codebase identity is part of the report.* The W1b pipeline writes
+   ``<run_dir>/run_config.json`` containing the producing AgentRx git
+   SHA + full RunConfig + input sha256s. ``load_run_identity`` reads
+   that file back and attaches the identity to each CellReport. The
+   aggregator also stamps its OWN git SHA at report-generation time
+   into the top-level JSON, so a reader can always answer: which code
+   ran the experiment, and which code summarised it.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import statistics
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -57,10 +67,12 @@ __all__ = [
     "CellReport",
     "MetricMissing",
     "Provenance",
+    "RunIdentity",
     "aggregate_invocation",
     "aggregate_sweep",
     "extract_provenance",
     "load_judge_summary",
+    "load_run_identity",
     "project_metric",
     "render_cell_reports_markdown",
     "report_to_json",
@@ -260,6 +272,7 @@ class CellReport:
     within_paper_std: bool | None = None
     notes: str = ""
     provenance: Provenance | None = None
+    run_identity: RunIdentity | None = None
 
 
 def _compute_delta(observed_mean: float, paper_mean: float,
@@ -291,6 +304,85 @@ def load_judge_summary(run_dir: str | Path) -> dict | None:
         return None
 
 
+@dataclass
+class RunIdentity:
+    """Which codebase + recipe produced an invocation's outputs.
+
+    Snapshotted from ``<run_dir>/run_config.json`` (written by
+    ``agentrx/pipeline/provenance.py``, W1b). Carries the producing
+    AgentRx git SHA so a reader can clone the exact commit, and the
+    full RunConfig + model_spec + data sha256s so a reader can
+    reconstruct the recipe and confirm input identity.
+
+    ``run_config_payload`` is the whole W1b dict verbatim. This costs a
+    few KB per cell but makes each CellReport a self-contained
+    reproduction record -- the only external dependency is the git
+    repository at ``producing_agentrx_commit_sha``.
+    """
+    producing_agentrx_commit_sha: str | None
+    producing_agentrx_version: str | None
+    timestamp_utc: str | None
+    input_sha256: str | None
+    ground_truth_sha256: str | None
+    run_config_path: str | None
+    run_config_payload: dict | None
+
+
+def load_run_identity(run_dir: str | Path) -> RunIdentity | None:
+    """Read ``<run_dir>/run_config.json`` and project the identity fields.
+
+    Returns ``None`` if the file is missing or corrupt. Returns a
+    populated ``RunIdentity`` with possibly-None inner fields when the
+    file exists but is an older schema that lacks some keys.
+    """
+    p = Path(run_dir) / "run_config.json"
+    if not p.is_file():
+        return None
+    try:
+        d = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    pkg = d.get("package") or {}
+    data = d.get("data_provenance") or {}
+    return RunIdentity(
+        producing_agentrx_commit_sha=pkg.get("agentrx_commit_sha"),
+        producing_agentrx_version=pkg.get("agentrx_version"),
+        timestamp_utc=d.get("timestamp_utc"),
+        input_sha256=data.get("input_sha256"),
+        ground_truth_sha256=data.get("ground_truth_sha256"),
+        run_config_path=str(p),
+        run_config_payload=d,
+    )
+
+
+def _aggregator_commit_sha() -> str | None:
+    """Return the git SHA of the AgentRx checkout containing aggregator.py.
+
+    Walks up from this file to find a git repo. Returns None if git is
+    unavailable or the file is not inside a git working tree -- the
+    report still works without it, but the SHA is the canonical way to
+    pin which aggregator code generated which numbers.
+    """
+    here = Path(__file__).resolve()
+    for parent in [here, *here.parents]:
+        if (parent / ".git").exists():
+            repo = parent
+            break
+    else:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    sha = out.stdout.strip()
+    return sha if sha else None
+
+
 # --------------------------------------------------------------------------
 # Aggregation
 # --------------------------------------------------------------------------
@@ -306,6 +398,7 @@ def aggregate_invocation(
     rd = Path(run_dir)
     reports: list[CellReport] = []
     summary = load_judge_summary(rd) if rd.is_dir() else None
+    identity = load_run_identity(rd) if rd.is_dir() else None
     base_status: Status | None = None
     if not rd.is_dir():
         base_status = "MISSING_RUN_DIR"
@@ -330,7 +423,9 @@ def aggregate_invocation(
             invocation_slug=invocation_slug,
         )
         if base_status is not None:
-            reports.append(CellReport(status=base_status, **common))
+            reports.append(CellReport(
+                status=base_status, run_identity=identity, **common,
+            ))
             continue
         prov = extract_provenance(summary)
         try:
@@ -338,7 +433,7 @@ def aggregate_invocation(
         except MetricMissing as e:
             reports.append(CellReport(
                 status="METRIC_MISSING", notes=str(e),
-                provenance=prov, **common,
+                provenance=prov, run_identity=identity, **common,
             ))
             continue
         delta, within = _compute_delta(mean, pv.mean, pv.std)
@@ -350,6 +445,7 @@ def aggregate_invocation(
             abs_delta=delta,
             within_paper_std=within,
             provenance=prov,
+            run_identity=identity,
             **common,
         ))
     return reports
@@ -382,9 +478,18 @@ def aggregate_sweep(manifest_path: str | Path) -> list[CellReport]:
 
 
 def report_to_json(reports: Sequence[CellReport]) -> str:
-    """Serialise reports as a stable JSON document (sorted by cell_id)."""
+    """Serialise reports as a stable JSON document (sorted by cell_id).
+
+    Top-level metadata pins the aggregator's own git SHA + generation
+    timestamp so a reader can answer both *"which experiment produced
+    these numbers"* (per-cell ``run_identity.producing_agentrx_commit_sha``)
+    and *"which aggregator summarised them"* (top-level
+    ``aggregator_commit_sha``).
+    """
     payload = {
         "schema_version": 1,
+        "aggregator_commit_sha": _aggregator_commit_sha(),
+        "generated_at_utc": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "n_reports": len(reports),
         "n_ok": sum(1 for r in reports if r.status == "OK"),
         "reports": [asdict(r) for r in sorted(reports, key=lambda r: r.cell_id)],
