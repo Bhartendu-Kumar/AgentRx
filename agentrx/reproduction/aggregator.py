@@ -29,6 +29,15 @@ Design (first principles)
 4. *Manifest is the join key.* We do NOT walk ``runs_root`` looking for
    directories; we read the manifest authored by the sweep so the sweep
    plan and the report are byte-aligned.
+
+5. *Provenance is part of the report, not metadata.* A reproduction
+   number without ``(model_name, api_version, prompt_tokens, output_tokens,
+   execution_time)`` is unverifiable. ``extract_provenance`` walks the
+   same per-run summaries that drove the metric projection and carries
+   the model identity + per-cell token + wall-clock totals into the
+   CellReport. Model homogeneity within an invocation is checked: if
+   different runs of the same cell used different model_names, that is
+   recorded explicitly rather than silently averaged.
 """
 from __future__ import annotations
 
@@ -47,8 +56,10 @@ from agentrx.reproduction.paper_claims import (
 __all__ = [
     "CellReport",
     "MetricMissing",
+    "Provenance",
     "aggregate_invocation",
     "aggregate_sweep",
+    "extract_provenance",
     "load_judge_summary",
     "project_metric",
     "render_cell_reports_markdown",
@@ -180,6 +191,57 @@ Status = str  # "OK" | "MISSING_RUN_DIR" | "MISSING_SUMMARY" | "METRIC_MISSING"
 
 
 @dataclass
+class Provenance:
+    """What ran, on what model, at what cost.
+
+    Populated from the per-run blocks of ``summary.json``. Token and
+    execution-time fields are SUMS across runs (the user can divide by
+    ``n_runs`` to recover per-run averages without losing information).
+    ``model_homogeneous`` records whether every run within the invocation
+    reported the same ``model_name`` -- a heterogeneous mix is a real
+    reproduction concern that the report must not hide.
+    """
+    model_name: str | None
+    api_version: str | None
+    total_prompt_tokens: int | None
+    total_output_tokens: int | None
+    total_execution_time_sec: float | None
+    n_runs: int
+    model_homogeneous: bool
+    distinct_model_names: list[str]
+
+
+def _sum_or_none(runs: Sequence[dict], key: str) -> int | float | None:
+    """Sum ``key`` across runs; return ``None`` if no run has the key."""
+    values = [r[key] for r in runs if key in r and r[key] is not None]
+    if not values:
+        return None
+    return sum(values)
+
+
+def extract_provenance(summary: dict) -> Provenance:
+    """Pull model identity and cost totals out of a judge summary.
+
+    Always returns a ``Provenance``; fields are ``None`` when the
+    corresponding per-run keys are absent (older judge outputs).
+    """
+    runs = summary.get("individual_run_summaries") or []
+    model_names_raw = [r.get("model_name") for r in runs if r.get("model_name")]
+    distinct = sorted(set(model_names_raw))
+    api_versions = [r.get("api_version") for r in runs if r.get("api_version")]
+    return Provenance(
+        model_name=distinct[0] if len(distinct) == 1 else (distinct[0] if distinct else None),
+        api_version=api_versions[0] if api_versions else None,
+        total_prompt_tokens=_sum_or_none(runs, "total_prompt_tokens"),
+        total_output_tokens=_sum_or_none(runs, "total_output_tokens"),
+        total_execution_time_sec=_sum_or_none(runs, "total_execution_time_sec"),
+        n_runs=len(runs),
+        model_homogeneous=(len(distinct) <= 1),
+        distinct_model_names=distinct,
+    )
+
+
+@dataclass
 class CellReport:
     cell_id: str
     table_label: str
@@ -197,6 +259,7 @@ class CellReport:
     abs_delta: float | None = None
     within_paper_std: bool | None = None
     notes: str = ""
+    provenance: Provenance | None = None
 
 
 def _compute_delta(observed_mean: float, paper_mean: float,
@@ -269,11 +332,13 @@ def aggregate_invocation(
         if base_status is not None:
             reports.append(CellReport(status=base_status, **common))
             continue
+        prov = extract_provenance(summary)
         try:
             mean, std, n = project_metric(c.metric, summary)
         except MetricMissing as e:
             reports.append(CellReport(
-                status="METRIC_MISSING", notes=str(e), **common,
+                status="METRIC_MISSING", notes=str(e),
+                provenance=prov, **common,
             ))
             continue
         delta, within = _compute_delta(mean, pv.mean, pv.std)
@@ -284,6 +349,7 @@ def aggregate_invocation(
             n_runs=n,
             abs_delta=delta,
             within_paper_std=within,
+            provenance=prov,
             **common,
         ))
     return reports
@@ -338,9 +404,9 @@ def render_cell_reports_markdown(reports: Sequence[CellReport]) -> str:
     """Render reports as a Markdown table. Stable column order for diffs."""
     header = (
         "| cell_id | table | domain | metric | paper | observed | n | "
-        "abs_delta | within_paper_std | status |"
+        "abs_delta | within_paper_std | model | status |"
     )
-    sep = "|---|---|---|---|---|---|---|---|---|---|"
+    sep = "|---|---|---|---|---|---|---|---|---|---|---|"
     rows = [header, sep]
     for r in sorted(reports, key=lambda x: x.cell_id):
         paper = _fmt_pm(r.paper_mean, r.paper_std)
@@ -348,8 +414,14 @@ def render_cell_reports_markdown(reports: Sequence[CellReport]) -> str:
         ad = "—" if r.abs_delta is None else f"{r.abs_delta:.2f}"
         wps = "—" if r.within_paper_std is None else ("yes" if r.within_paper_std else "no")
         nr = "—" if r.n_runs is None else str(r.n_runs)
+        if r.provenance is None or r.provenance.model_name is None:
+            model = "—"
+        elif r.provenance.model_homogeneous:
+            model = r.provenance.model_name
+        else:
+            model = "MIXED:" + ",".join(r.provenance.distinct_model_names)
         rows.append(
             f"| {r.cell_id} | {r.table_label} | {r.domain} | {r.metric} | "
-            f"{paper} | {observed} | {nr} | {ad} | {wps} | {r.status} |"
+            f"{paper} | {observed} | {nr} | {ad} | {wps} | {model} | {r.status} |"
         )
     return "\n".join(rows) + "\n"
