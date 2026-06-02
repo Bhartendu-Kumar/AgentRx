@@ -123,6 +123,74 @@ def _cmd_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    # Imported lazily so ``import agentrx.reproduction.cli`` stays cheap for
+    # the list/show/cmd subcommands used by tests.
+    from agentrx.reproduction.sweep import (
+        build_manifest,
+        dump_manifest,
+        execute_sequential,
+        group_into_invocations,
+        select_claims,
+    )
+
+    cell_ids = [s for s in (args.cells.split(",") if args.cells else []) if s]
+    selection = {
+        "cell_ids": cell_ids or None,
+        "table_label": args.table,
+        "domain": args.domain,
+        "metric": args.metric,
+        "dynamic_mode": args.dynamic_mode,
+    }
+    try:
+        claims = select_claims(
+            cell_ids=cell_ids or None,
+            table_label=args.table,
+            domain=args.domain,
+            metric=args.metric,
+            dynamic_mode=args.dynamic_mode,
+        )
+    except KeyError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if not claims:
+        print("error: no claims matched the given filters", file=sys.stderr)
+        return 2
+    invocations = group_into_invocations(claims)
+    manifest = build_manifest(
+        invocations,
+        runs_root=args.runs_root,
+        selection=selection,
+        base_dir=args.base_dir,
+        endpoint=args.endpoint,
+        python=args.python,
+    )
+    print(f"# Sweep plan: {len(claims)} claim(s) -> {len(invocations)} "
+          f"invocation(s) -> {args.runs_root}")
+    for inv in invocations:
+        cells_preview = ", ".join(inv.cell_ids[:3])
+        more = "" if len(inv.claims) <= 3 else f" ... (+{len(inv.claims) - 3} more)"
+        print(f"  - {inv.slug}: {len(inv.claims)} cell(s) [{cells_preview}{more}]")
+    if args.dry_run:
+        print(json.dumps(manifest, indent=2))
+        return 0
+    manifest_path = dump_manifest(manifest, args.runs_root)
+    print(f"# Wrote manifest: {manifest_path}")
+    results = execute_sequential(
+        invocations,
+        runs_root=args.runs_root,
+        base_dir=args.base_dir,
+        python=args.python,
+        endpoint=args.endpoint,
+        resume=not args.no_resume,
+    )
+    failed = [r for r in results if r.returncode not in (0, None)]
+    skipped = sum(r.skipped for r in results)
+    print(f"# Sweep complete: {len(results)} invocation(s), "
+          f"{skipped} skipped, {len(failed)} failed")
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="agentrx.reproduction",
@@ -146,6 +214,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmd.add_argument("--run-name", default=None)
     p_cmd.add_argument("--endpoint", default="azure", choices=["azure", "trapi", "copilot"])
     p_cmd.set_defaults(func=_cmd_cmd)
+
+    p_sweep = sub.add_parser(
+        "sweep",
+        help="Run a sweep of catalog claims via run.py, with invocation "
+             "grouping and a manifest.",
+    )
+    p_sweep.add_argument("--runs-root", required=True,
+                         help="Output root directory; manifest.json and "
+                              "invocations/<slug>/ live under here.")
+    p_sweep.add_argument("--cells", default=None,
+                         help="Comma-separated cell_ids to run.")
+    p_sweep.add_argument("--table", default=None,
+                         help="Filter by LaTeX table label, e.g. tab:ablations.")
+    p_sweep.add_argument("--domain", default=None,
+                         choices=["tau", "magentic", "magentic_star", "flash"])
+    p_sweep.add_argument("--metric", default=None)
+    p_sweep.add_argument("--dynamic-mode", default=None,
+                         choices=["oneshot", "stepbystep"])
+    p_sweep.add_argument("--endpoint", default="azure",
+                         choices=["azure", "trapi", "copilot"])
+    p_sweep.add_argument("--base-dir", default=".",
+                         help="Repo root that contains run.py and data/ "
+                              "(default: current working directory).")
+    p_sweep.add_argument("--python", default=sys.executable,
+                         help="Python interpreter to invoke run.py with "
+                              "(default: this interpreter).")
+    p_sweep.add_argument("--dry-run", action="store_true",
+                         help="Print the plan and manifest JSON; do not write "
+                              "or execute anything.")
+    p_sweep.add_argument("--no-resume", action="store_true",
+                         help="Re-run invocations even if their state ledger "
+                              "already records the judge stage as complete.")
+    p_sweep.set_defaults(func=_cmd_sweep)
 
     return p
 
