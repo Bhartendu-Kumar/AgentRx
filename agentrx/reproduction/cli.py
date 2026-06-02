@@ -191,6 +191,40 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _cmd_report(args: argparse.Namespace) -> int:
+    from agentrx.reproduction.aggregator import (
+        aggregate_sweep,
+        render_cell_reports_markdown,
+        report_to_json,
+    )
+
+    reports = aggregate_sweep(args.manifest)
+    if args.format == "json":
+        print(report_to_json(reports))
+    elif args.format == "markdown":
+        print(render_cell_reports_markdown(reports), end="")
+    elif args.format == "summary":
+        n_ok = sum(1 for r in reports if r.status == "OK")
+        n_within = sum(1 for r in reports if r.within_paper_std is True)
+        n_outside = sum(1 for r in reports if r.within_paper_std is False)
+        n_no_std = sum(1 for r in reports
+                       if r.status == "OK" and r.within_paper_std is None)
+        n_missing_rd = sum(1 for r in reports if r.status == "MISSING_RUN_DIR")
+        n_missing_sum = sum(1 for r in reports if r.status == "MISSING_SUMMARY")
+        n_missing_metric = sum(1 for r in reports if r.status == "METRIC_MISSING")
+        print(f"# Aggregator summary ({len(reports)} cells, manifest={args.manifest})")
+        print(f"  OK:                  {n_ok}")
+        print(f"  Within paper std:    {n_within}")
+        print(f"  Outside paper std:   {n_outside}")
+        print(f"  OK but no paper std: {n_no_std}")
+        print(f"  Missing run dir:     {n_missing_rd}")
+        print(f"  Missing summary:     {n_missing_sum}")
+        print(f"  Metric not projected:{n_missing_metric}")
+    else:  # pragma: no cover - argparse 'choices' prevents this
+        raise AssertionError(f"unknown format {args.format!r}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="agentrx.reproduction",
@@ -247,6 +281,19 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Re-run invocations even if their state ledger "
                               "already records the judge stage as complete.")
     p_sweep.set_defaults(func=_cmd_sweep)
+
+    p_report = sub.add_parser(
+        "report",
+        help="Aggregate a completed sweep's judge outputs into a per-cell "
+             "paper-vs-observed report.",
+    )
+    p_report.add_argument("--manifest", required=True,
+                          help="Path to a sweep manifest.json.")
+    p_report.add_argument("--format", default="summary",
+                          choices=["summary", "json", "markdown"],
+                          help="summary: human counts; json: full structured "
+                               "reports; markdown: one table row per cell.")
+    p_report.set_defaults(func=_cmd_report)
 
     return p
 

@@ -1,0 +1,355 @@
+"""Aggregator: join a sweep manifest to per-invocation judge outputs and
+project each catalog claim's metric into paper units, with a paper-delta.
+
+This module closes the catalog -> sweep -> aggregator triangle: the catalog
+declares ``cell_id -> (metric, paper_value)``, the sweep produces
+``<run_dir>/judge_output/analysis/summary.json`` per invocation, and this
+module emits one ``CellReport`` per claim with ``observed_mean +/- observed_std``
+in the same units the paper printed (``%`` for accuracies, ``steps`` for
+distance).
+
+Design (first principles)
+-------------------------
+1. *Paper units are sacred.* If the paper prints ``32.2 +/- 3.2``, observed
+   must come back as a percent number. The judge writes accuracy as a
+   fraction in ``[0,1]``; ``_project_*`` is the single place we multiply
+   by 100. Distance metrics pass through.
+
+2. *Std is computed from per-run accuracy, not from a precomputed scalar.*
+   ``analyze_metrics`` does the same: per-run fraction = correct/total,
+   then ``pstdev`` over the run vector (ddof=0). This matches what
+   ``compute_accuracy_std`` in agentrx/reports/analyze_metrics.py does
+   for the legacy single-run reports.
+
+3. *The aggregator never invents data.* If a metric cannot be projected
+   (no per-run cases, missing summary, missing key), the cell's
+   ``status`` reflects that and ``observed_mean/std`` are ``None``. We
+   do not silently substitute zeros.
+
+4. *Manifest is the join key.* We do NOT walk ``runs_root`` looking for
+   directories; we read the manifest authored by the sweep so the sweep
+   plan and the report are byte-aligned.
+"""
+from __future__ import annotations
+
+import json
+import statistics
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Sequence
+
+from agentrx.reproduction.paper_claims import (
+    Metric,
+    PaperClaim,
+    get_claim,
+)
+
+__all__ = [
+    "CellReport",
+    "MetricMissing",
+    "aggregate_invocation",
+    "aggregate_sweep",
+    "load_judge_summary",
+    "project_metric",
+    "render_cell_reports_markdown",
+    "report_to_json",
+]
+
+
+class MetricMissing(LookupError):
+    """A paper metric cannot be projected from the summary as-is.
+
+    Raised when the per-run accuracy vector is empty, when a required
+    summary key is absent, or when a metric is recognised but currently
+    has no implemented projection. The aggregator catches this and
+    surfaces it as ``status='METRIC_MISSING'`` on the cell report rather
+    than letting it crash the run.
+    """
+
+
+# --------------------------------------------------------------------------
+# Metric projection
+# --------------------------------------------------------------------------
+
+
+def _per_run_step_index_acc(run: dict) -> float | None:
+    c = run.get("Correct step number predictions")
+    i = run.get("Incorrect step number predictions")
+    if c is None or i is None:
+        return None
+    total = c + i
+    return (c / total) if total > 0 else None
+
+
+def _per_run_category_acc(run: dict) -> float | None:
+    c = run.get("Correct cases")
+    i = run.get("Incorrect cases")
+    if c is None or i is None:
+        return None
+    total = c + i
+    return (c / total) if total > 0 else None
+
+
+def _per_run_avg_step_distance(run: dict) -> float | None:
+    v = run.get("Overall average distance")
+    return None if v is None else float(v)
+
+
+def _per_run_tolerance(run: dict, tol: int) -> float | None:
+    key = f"Step accuracy within +-{tol}"
+    v = run.get(key)
+    return None if v is None else float(v)
+
+
+_TOLERANCE_METRIC_TO_INT: dict[str, int] = {
+    "step_acc_at_plus_minus_1": 1,
+    "step_acc_at_plus_minus_3": 3,
+    "step_acc_at_plus_minus_5": 5,
+}
+
+
+def _scale_pct(values: list[float]) -> tuple[float, float]:
+    return statistics.mean(values) * 100.0, statistics.pstdev(values) * 100.0
+
+
+def _scale_raw(values: list[float]) -> tuple[float, float]:
+    return statistics.mean(values), statistics.pstdev(values)
+
+
+def project_metric(metric: Metric, summary: dict) -> tuple[float, float, int]:
+    """Return ``(observed_mean, observed_std, n_runs)`` in paper units.
+
+    ``summary`` is the deserialised
+    ``judge_output/analysis/summary.json`` (see
+    ``agentrx/judge/judge.py::create_aggregate_summary``).
+
+    Raises ``MetricMissing`` if the metric cannot be projected (empty
+    per-run vector, missing keys, or unimplemented metric).
+    """
+    runs = summary.get("individual_run_summaries")
+    if not isinstance(runs, list) or not runs:
+        raise MetricMissing(
+            f"summary has no 'individual_run_summaries' or it is empty "
+            f"(metric={metric!r})"
+        )
+
+    if metric == "step_index_acc":
+        per_run = [v for v in (_per_run_step_index_acc(r) for r in runs) if v is not None]
+        if not per_run:
+            raise MetricMissing(f"no run has step-prediction counts (metric={metric!r})")
+        m, s = _scale_pct(per_run)
+        return m, s, len(per_run)
+
+    if metric == "category_acc":
+        per_run = [v for v in (_per_run_category_acc(r) for r in runs) if v is not None]
+        if not per_run:
+            raise MetricMissing(f"no run has Correct/Incorrect cases (metric={metric!r})")
+        m, s = _scale_pct(per_run)
+        return m, s, len(per_run)
+
+    if metric == "avg_step_distance":
+        per_run = [v for v in (_per_run_avg_step_distance(r) for r in runs) if v is not None]
+        if not per_run:
+            raise MetricMissing(f"no run has Overall average distance (metric={metric!r})")
+        m, s = _scale_raw(per_run)
+        return m, s, len(per_run)
+
+    if metric in _TOLERANCE_METRIC_TO_INT:
+        tol = _TOLERANCE_METRIC_TO_INT[metric]
+        per_run = [v for v in (_per_run_tolerance(r, tol) for r in runs) if v is not None]
+        if not per_run:
+            raise MetricMissing(
+                f"no run has 'Step accuracy within +-{tol}' (metric={metric!r})"
+            )
+        m, s = _scale_pct(per_run)
+        return m, s, len(per_run)
+
+    # Catalog has more metric names (per-category, agent-attribution, tokens)
+    # that no current claim uses. Surface them as MISSING rather than
+    # silently dropping; future commits add the projections.
+    raise MetricMissing(
+        f"metric {metric!r} has no projection implemented yet"
+    )
+
+
+# --------------------------------------------------------------------------
+# CellReport
+# --------------------------------------------------------------------------
+
+Status = str  # "OK" | "MISSING_RUN_DIR" | "MISSING_SUMMARY" | "METRIC_MISSING"
+
+
+@dataclass
+class CellReport:
+    cell_id: str
+    table_label: str
+    domain: str
+    metric: str
+    paper_mean: float
+    paper_std: float | None
+    unit: str
+    run_dir: str
+    invocation_slug: str
+    status: Status
+    observed_mean: float | None = None
+    observed_std: float | None = None
+    n_runs: int | None = None
+    abs_delta: float | None = None
+    within_paper_std: bool | None = None
+    notes: str = ""
+
+
+def _compute_delta(observed_mean: float, paper_mean: float,
+                   paper_std: float | None) -> tuple[float, bool | None]:
+    delta = abs(observed_mean - paper_mean)
+    if paper_std is None:
+        return delta, None
+    return delta, delta <= paper_std
+
+
+# --------------------------------------------------------------------------
+# I/O
+# --------------------------------------------------------------------------
+
+
+def load_judge_summary(run_dir: str | Path) -> dict | None:
+    """Load ``<run_dir>/judge_output/analysis/summary.json`` or return None.
+
+    ``None`` is the explicit *"this invocation didn't produce a judge
+    summary"* signal; callers translate it to ``MISSING_SUMMARY`` on the
+    cell report instead of trying to recover.
+    """
+    p = Path(run_dir) / "judge_output" / "analysis" / "summary.json"
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+# --------------------------------------------------------------------------
+# Aggregation
+# --------------------------------------------------------------------------
+
+
+def aggregate_invocation(
+    *,
+    invocation_slug: str,
+    run_dir: str | Path,
+    claims: Sequence[PaperClaim],
+) -> list[CellReport]:
+    """Aggregate one invocation's judge output into per-claim CellReports."""
+    rd = Path(run_dir)
+    reports: list[CellReport] = []
+    summary = load_judge_summary(rd) if rd.is_dir() else None
+    base_status: Status | None = None
+    if not rd.is_dir():
+        base_status = "MISSING_RUN_DIR"
+    elif summary is None:
+        base_status = "MISSING_SUMMARY"
+
+    for c in claims:
+        pv = c.paper_value
+        assert pv is not None, (
+            f"claim {c.cell_id} has no paper_value; the catalog must not "
+            "emit claims without published numbers for the aggregator."
+        )
+        common = dict(
+            cell_id=c.cell_id,
+            table_label=c.table_label,
+            domain=c.domain,
+            metric=c.metric,
+            paper_mean=pv.mean,
+            paper_std=pv.std,
+            unit=pv.unit,
+            run_dir=str(rd.resolve()) if rd.is_absolute() or rd.exists() else str(rd),
+            invocation_slug=invocation_slug,
+        )
+        if base_status is not None:
+            reports.append(CellReport(status=base_status, **common))
+            continue
+        try:
+            mean, std, n = project_metric(c.metric, summary)
+        except MetricMissing as e:
+            reports.append(CellReport(
+                status="METRIC_MISSING", notes=str(e), **common,
+            ))
+            continue
+        delta, within = _compute_delta(mean, pv.mean, pv.std)
+        reports.append(CellReport(
+            status="OK",
+            observed_mean=mean,
+            observed_std=std,
+            n_runs=n,
+            abs_delta=delta,
+            within_paper_std=within,
+            **common,
+        ))
+    return reports
+
+
+def aggregate_sweep(manifest_path: str | Path) -> list[CellReport]:
+    """Aggregate every invocation in a sweep manifest into a flat report.
+
+    Output is sorted by ``cell_id`` so reports are diff-friendly across
+    sweep runs.
+    """
+    mpath = Path(manifest_path)
+    manifest = json.loads(mpath.read_text())
+    out: list[CellReport] = []
+    for entry in manifest.get("invocations", []):
+        slug = entry["slug"]
+        run_dir = entry["run_dir"]
+        cell_ids = entry["cell_ids"]
+        claims = [get_claim(cid) for cid in cell_ids]
+        out.extend(aggregate_invocation(
+            invocation_slug=slug, run_dir=run_dir, claims=claims,
+        ))
+    out.sort(key=lambda r: r.cell_id)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Rendering
+# --------------------------------------------------------------------------
+
+
+def report_to_json(reports: Sequence[CellReport]) -> str:
+    """Serialise reports as a stable JSON document (sorted by cell_id)."""
+    payload = {
+        "schema_version": 1,
+        "n_reports": len(reports),
+        "n_ok": sum(1 for r in reports if r.status == "OK"),
+        "reports": [asdict(r) for r in sorted(reports, key=lambda r: r.cell_id)],
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _fmt_pm(mean: float | None, std: float | None) -> str:
+    if mean is None:
+        return "—"
+    if std is None:
+        return f"{mean:.2f}"
+    return f"{mean:.2f} +/- {std:.2f}"
+
+
+def render_cell_reports_markdown(reports: Sequence[CellReport]) -> str:
+    """Render reports as a Markdown table. Stable column order for diffs."""
+    header = (
+        "| cell_id | table | domain | metric | paper | observed | n | "
+        "abs_delta | within_paper_std | status |"
+    )
+    sep = "|---|---|---|---|---|---|---|---|---|---|"
+    rows = [header, sep]
+    for r in sorted(reports, key=lambda x: x.cell_id):
+        paper = _fmt_pm(r.paper_mean, r.paper_std)
+        observed = _fmt_pm(r.observed_mean, r.observed_std)
+        ad = "—" if r.abs_delta is None else f"{r.abs_delta:.2f}"
+        wps = "—" if r.within_paper_std is None else ("yes" if r.within_paper_std else "no")
+        nr = "—" if r.n_runs is None else str(r.n_runs)
+        rows.append(
+            f"| {r.cell_id} | {r.table_label} | {r.domain} | {r.metric} | "
+            f"{paper} | {observed} | {nr} | {ad} | {wps} | {r.status} |"
+        )
+    return "\n".join(rows) + "\n"
