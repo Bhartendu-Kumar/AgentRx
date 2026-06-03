@@ -527,9 +527,13 @@ def run_judge(input_path: str, run_dir: str, domain: str, endpoint: str,
             log_file=log_file,
         )
 
-    # When > 1 iteration was run, emit the mean/std aggregate the paper reports.
-    if config.num_runs > 1:
-        judge_module.create_aggregate_summary(judge_out_dir, config.num_runs)
+    # Always emit the canonical aggregate at judge_output/analysis/summary.json.
+    # This file is the judge stage's output contract -- downstream consumers
+    # (notably agentrx.reproduction.aggregator.load_judge_summary) require it
+    # regardless of num_runs. At n=1 the aggregate is a 1-sample (mean=value,
+    # std=0); compute_stats already gates stdev/variance on n>1, so the n=1
+    # path is safe.
+    judge_module.create_aggregate_summary(judge_out_dir, config.num_runs)
 
     print(f"  Output: {judge_out_dir}")
     return judge_out_dir
