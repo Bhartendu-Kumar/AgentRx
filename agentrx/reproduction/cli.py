@@ -226,6 +226,38 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify(args: argparse.Namespace) -> int:
+    """Aggregate a completed sweep and emit a PASS/FAIL reproduction gate.
+
+    This is ``report`` plus a verdict: it projects the catalog metrics
+    onto the sweep (via ``aggregate_sweep``), then applies the tolerance
+    policy in ``agentrx/reproduction/verify.py`` and returns a process
+    exit code a CI job can branch on.
+
+    Exit code:
+        0  every selected cell PASSed (the gate is green)
+        1  at least one cell FAILed or was INCONCLUSIVE
+    """
+    from agentrx.reproduction.aggregator import aggregate_sweep
+    from agentrx.reproduction.verify import (
+        classify_reports,
+        render_verdict_summary,
+        verdict_to_json,
+    )
+
+    reports = aggregate_sweep(args.manifest)
+    verdict = classify_reports(
+        reports,
+        std_multiplier=args.std_multiplier,
+        abs_tol=args.abs_tol,
+    )
+    if args.format == "json":
+        print(verdict_to_json(verdict))
+    else:  # summary
+        print(render_verdict_summary(verdict), end="")
+    return 0 if verdict.passed else 1
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     """Walk a directory of judge summaries and check project_metric on every one.
 
@@ -384,6 +416,26 @@ def build_parser() -> argparse.ArgumentParser:
                           help="summary: human counts; json: full structured "
                                "reports; markdown: one table row per cell.")
     p_report.set_defaults(func=_cmd_report)
+
+    p_verify = sub.add_parser(
+        "verify",
+        help="Aggregate a completed sweep and emit a PASS/FAIL reproduction "
+             "gate (exit 0 iff every cell reproduced within tolerance).",
+    )
+    p_verify.add_argument("--manifest", required=True,
+                          help="Path to a sweep manifest.json.")
+    p_verify.add_argument("--std-multiplier", type=float, default=1.0,
+                          help="Tolerance band = paper_std * this multiplier "
+                               "(default 1.0 = inside one reported sigma).")
+    p_verify.add_argument("--abs-tol", type=float, default=None,
+                          help="Absolute tolerance in paper units, used ONLY "
+                               "for cells the paper published without a std. "
+                               "If unset, such cells are INCONCLUSIVE.")
+    p_verify.add_argument("--format", default="summary",
+                          choices=["summary", "json"],
+                          help="summary: one line per cell + verdict; "
+                               "json: full structured verdict.")
+    p_verify.set_defaults(func=_cmd_verify)
 
     p_audit = sub.add_parser(
         "audit",
